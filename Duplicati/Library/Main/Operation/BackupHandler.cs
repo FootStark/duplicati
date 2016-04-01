@@ -954,47 +954,61 @@ namespace Duplicati.Library.Main.Operation
                             int blocklistoffset = 0;
 
                             m_filehasher.Initialize();
+                            System.Threading.Tasks.Task<int> calcFileHashTask = null;
 
-                            
                             var offset = 0;
                             var remaining = fs.Readblock();
-                            
-                            do
+                            try
                             {
-                                var size = Math.Min(m_blocksize, remaining);
-
-                                m_filehasher.TransformBlock(m_blockbuffer, offset, size, m_blockbuffer, offset);
-                                var blockkey = m_blockhasher.ComputeHash(m_blockbuffer, offset, size);
-                                if (m_blocklistbuffer.Length - blocklistoffset < blockkey.Length)
+                                do
                                 {
-                                    var blkey = Convert.ToBase64String(m_blockhasher.ComputeHash(m_blocklistbuffer, 0, blocklistoffset));
-                                    blocklisthashes.Add(blkey);
-                                    AddBlockToOutput(backend, blkey, m_blocklistbuffer, 0, blocklistoffset, CompressionHint.Noncompressible, true);
-                                    blocklistoffset = 0;
-                                }
+                                    if (offset == 0)
+                                    {   // m_blockbuffer will not be modified during block processing, so file hash can be computed on whole chunk in parallel.
+                                        calcFileHashTask = System.Threading.Tasks.Task.Run(
+                                            () => m_filehasher.TransformBlock(m_blockbuffer, 0, remaining, m_blockbuffer, 0));
+                                    }
+                                    var size = Math.Min(m_blocksize, remaining);
 
-                                Array.Copy(blockkey, 0, m_blocklistbuffer, blocklistoffset, blockkey.Length);
-                                blocklistoffset += blockkey.Length;
+                                    var blockkey = m_blockhasher.ComputeHash(m_blockbuffer, offset, size);
+                                    if (m_blocklistbuffer.Length - blocklistoffset < blockkey.Length)
+                                    {
+                                        var blkey = Convert.ToBase64String(m_blockhasher.ComputeHash(m_blocklistbuffer, 0, blocklistoffset));
+                                        blocklisthashes.Add(blkey);
+                                        AddBlockToOutput(backend, blkey, m_blocklistbuffer, 0, blocklistoffset, CompressionHint.Noncompressible, true);
+                                        blocklistoffset = 0;
+                                    }
 
-                                var key = Convert.ToBase64String(blockkey);
-                                AddBlockToOutput(backend, key, m_blockbuffer, offset, size, hint, false);
-                                hashcollector.Add(key);
-                                filesize += size;
+                                    Array.Copy(blockkey, 0, m_blocklistbuffer, blocklistoffset, blockkey.Length);
+                                    blocklistoffset += blockkey.Length;
 
-                                m_result.OperationProgressUpdater.UpdateFileProgress(filesize);
-                                if (m_result.TaskControlRendevouz() == TaskControlState.Stop)
-                                    return false;
-                                
-                                remaining -= size;
-                                offset += size;
-                                
-                                if (remaining == 0)
-                                {
-                                    offset = 0;
-                                    remaining = fs.Readblock();
-                                }
+                                    var key = Convert.ToBase64String(blockkey);
+                                    AddBlockToOutput(backend, key, m_blockbuffer, offset, size, hint, false);
+                                    hashcollector.Add(key);
+                                    filesize += size;
 
-                            } while (remaining > 0);
+                                    m_result.OperationProgressUpdater.UpdateFileProgress(filesize);
+                                    if (m_result.TaskControlRendevouz() == TaskControlState.Stop)
+                                        return false;
+
+                                    remaining -= size;
+                                    offset += size;
+
+                                    if (remaining == 0)
+                                    {
+                                        if (calcFileHashTask != null) calcFileHashTask.Wait(); // wait because blockbuffer will now be overwritten.
+                                        calcFileHashTask = null;
+                                        offset = 0;
+                                        remaining = fs.Readblock();
+                                    }
+
+                                } while (remaining > 0);
+                            }
+                            finally
+                            {
+                                // wait on task in exception case.
+                                if (calcFileHashTask != null) calcFileHashTask.Wait();
+                                calcFileHashTask = null;
+                            }
 
                             //If all fits in a single block, don't bother with blocklists
                             if (hashcollector.Count > 1)
