@@ -707,21 +707,33 @@ namespace Duplicati.Library.Main.Database
             {
             	cmd.Transaction = transaction;
 
-                // Calculate the lengths for each blockset                
-                var combinedLengths = @"SELECT ""BlocksetEntry"".""BlocksetID"" AS ""BlocksetID"", SUM(""Block"".""Size"") AS ""CalcLen"", ""Blockset"".""Length"" AS ""Length"" FROM ""Block"", ""BlocksetEntry"", ""Blockset"" WHERE ""BlocksetEntry"".""BlockID"" = ""Block"".""ID"" AND ""BlocksetEntry"".""BlocksetID"" = ""Blockset"".""ID"" GROUP BY ""BlocksetEntry"".""BlocksetID""";
+                // Calculate the theoretical lengths from blocks for each blockset as well as the ones really present, to compare with full length
+                // Also, check if indexes are dense (Max index and number of blocks) should do the trick.
+                // Note: the LEFT JOIN'S now also include folder entries for which only metadata should be present. This is intentional.
+                var combinedLengths = @"SELECT ""BlocksetEntry"".""BlocksetID"" AS ""BlocksetID"", IFNULL(SUM(""Block"".""Size""), 0) AS ""CalcLen"" " + "\n"
+                                    + @"     , IFNULL(SUM(CASE WHEN ""Block"".""VolumeId"" < 0 THEN 0 ELSE ""Block"".""Size"" END), 0) AS ""CalcLenPresent"" " + "\n"
+                                    + @"     , IFNULL(COUNT(""Block"".""ID""), 0) AS ""BlockCount"", IFNULL(MAX(""BlocksetEntry"".""Index"") + 1, 0) AS ""BlockIndexes"" " + "\n"
+                                    + @"     , ""Blockset"".""Length"" AS ""Length"" " + "\n"
+                                    + @"  FROM ""Blockset"" LEFT JOIN (""BlocksetEntry"" INNER JOIN ""Block"" ON ""Block"".""ID"" = ""BlocksetEntry"".""BlockID"") " + "\n"
+                                    + @"                    ON ""BlocksetEntry"".""BlocksetID"" = ""Blockset"".""ID"" GROUP BY ""Blockset"".""ID""";
                 // For each blockset with wrong lengths, fetch the file path
-                var reportDetails = @"SELECT ""CalcLen"", ""Length"", ""A"".""BlocksetID"", ""File"".""Path"" FROM (" + combinedLengths + @") A, ""File"" WHERE ""A"".""BlocksetID"" = ""File"".""BlocksetID"" AND ""A"".""CalcLen"" != ""A"".""Length"" ";
-                
+                var reportDetails = @"SELECT ""File"".""Path"", ""File"".""BlocksetID"", ""Length"", ""CalcLen"", ""CalcLenPresent"", ""BlockCount"", ""BlockIndexes"" " + "\n"
+                                  + @"  FROM ""File"" LEFT JOIN (" + "\n" + combinedLengths + "\n" + @") A ON ""A"".""BlocksetID"" = ""File"".""BlocksetID"" " + "\n"
+                                  + @" WHERE (NOT ""A"".""CalcLen"" IS ""A"".""Length"") " + "\n"
+                                  + @"    OR (NOT ""A"".""CalcLenPresent"" IS ""A"".""Length"") " + "\n"
+                                  + @"    OR (NOT ""A"".""BlockCount"" IS ""A"".""BlockIndexes"") ";
+
                 using(var rd = cmd.ExecuteReader(reportDetails))
                 	if (rd.Read())
                 	{
                 		var sb = new StringBuilder();
-                		sb.AppendLine("Found inconsistency in the following files while validating database: ");
+                		sb.AppendLine("Found inconsistency or reference to missing blocks in the following files while validating database: ");
                 		var c = 0;
                 		do
                 		{
                 			if (c < 5)
-                				sb.AppendFormat("{0}, actual size {1}, dbsize {2}, blocksetid: {3}{4}", rd.GetValue(3), rd.GetValue(1), rd.GetValue(0), rd.GetValue(2), Environment.NewLine);
+                				sb.AppendFormat("{0} [BlocksetId:{1}, nominal dbsize: {2}] - blocksize: {3}; thereof present: {4}; as blocks: {5} of {6}{7}"
+                                    , rd.GetValue(0), rd.GetValue(1), rd.GetValue(2), rd.GetValue(3), rd.GetValue(4), rd.GetValue(5), rd.GetValue(6), Environment.NewLine);
                 			c++;
                 		} while(rd.Read());
                 		
