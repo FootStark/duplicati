@@ -222,7 +222,7 @@ namespace Duplicati.Library.Main.Database
         
         public interface IFilelist : IDisposable
         {
-            void Add(string path, long size, string hash, long metasize, string metahash, IEnumerable<string> blocklistHashes, FilelistEntryType type, DateTime time);
+            void Add(string path, long size, string hash, long metasize, string metahash, FilelistEntryType type, DateTime time);
             IEnumerable<KeyValuePair<Library.Interface.TestEntryStatus, string>> Compare();
         }
         
@@ -238,7 +238,7 @@ namespace Duplicati.Library.Main.Database
             { 
             }
             
-            public void Add(string path, long size, string hash, long metasize, string metahash, IEnumerable<string> blocklistHashes, FilelistEntryType type, DateTime time)
+            public void Add(string path, long size, string hash, long metasize, string metahash, FilelistEntryType type, DateTime time)
             {
                 m_insertCommand.SetParameterValue(0, path);
                 m_insertCommand.SetParameterValue(1, hash == null ? - 1: size);

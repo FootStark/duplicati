@@ -65,6 +65,34 @@ namespace Duplicati.Library.Main.Database
                 return self.ExecuteScalar();
         }
 
+        public static KeyValuePair<long, object> ExecuteScalarKeyValue(this System.Data.IDbCommand self, string cmd, long defaultKey, params object[] values)
+        {
+            if (cmd != null)
+                self.CommandText = cmd;
+
+            if (values != null && values.Length > 0)
+            {
+                self.Parameters.Clear();
+                foreach (var n in values)
+                    self.AddParameter(n);
+            }
+
+            return self.ExecuteScalarKeyValue(defaultKey);
+        }
+
+        public static KeyValuePair<long, object> ExecuteScalarKeyValue(this System.Data.IDbCommand self, long defaultKey)
+        {
+            KeyValuePair<long, object> retVal = new KeyValuePair<long, object>(defaultKey, null);
+            using (new Logging.Timer(LC.L("ExecuteScalar: {0}", self.CommandText)))
+            {
+                using (var rd = self.ExecuteReader())
+                    if (rd.Read())  // No while statement. If more than one result row, the query was wrong. Just ignore.
+                        retVal = new KeyValuePair<long, object>(rd.ConvertValueToInt64(0), rd.GetValue(1));
+            }
+            return retVal;
+        }
+
+
         public static long ExecuteScalarInt64(this System.Data.IDbCommand self, long defaultvalue = -1)
         {
             return ExecuteScalarInt64(self, null, defaultvalue, null);

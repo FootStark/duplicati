@@ -51,6 +51,7 @@ namespace Duplicati.Library.Main.Database
         private System.Data.IDbCommand m_insertBlocklistHashCommand;
         private System.Data.IDbCommand m_updateBlockVolumeCommand;
         private System.Data.IDbCommand m_insertBlockset;
+        private System.Data.IDbCommand m_insertBlocksetEntry;
         private System.Data.IDbCommand m_findBlocksetCommand;
         private System.Data.IDbCommand m_findMetadatasetCommand;
         private System.Data.IDbCommand m_findFilesetCommand;
@@ -60,7 +61,7 @@ namespace Duplicati.Library.Main.Database
         private System.Data.IDbCommand m_insertDuplicateBlockCommand;
         
         private HashLookupHelper<bool> m_blockListHashLookup;
-        private HashLookupHelper<long> m_blockHashLookup;
+        private HashLookupHelper<KeyValuePair<long, long>> m_blockHashLookup;
         private HashLookupHelper<long> m_fileHashLookup;
         private HashLookupHelper<long> m_metadataLookup;
         private PathLookupHelper<PathEntryKeeper> m_filesetLookup;
@@ -133,6 +134,7 @@ namespace Duplicati.Library.Main.Database
             m_insertFilesetEntryCommand = m_connection.CreateCommand();
             m_insertMetadatasetCommand = m_connection.CreateCommand();
             m_insertBlocksetCommand = m_connection.CreateCommand();
+            m_insertBlocksetEntry = m_connection.CreateCommand();
             m_insertBlocklistHashCommand = m_connection.CreateCommand();
             m_updateBlockVolumeCommand = m_connection.CreateCommand();
             m_insertBlockset = m_connection.CreateCommand();
@@ -155,7 +157,10 @@ namespace Duplicati.Library.Main.Database
             
             m_insertBlocksetCommand.CommandText = @"INSERT INTO ""Blockset"" (""Length"", ""FullHash"") VALUES (?,?); SELECT last_insert_rowid();";
             m_insertBlocksetCommand.AddParameters(2);
-                            
+
+            m_insertBlocksetEntry.CommandText = @"INSERT INTO ""BlocksetEntry"" (""BlocksetID"", ""Index"", ""BlockID"") VALUES (?,?,?);";
+            m_insertBlocksetEntry.AddParameters(3);
+
             m_insertBlocklistHashCommand.CommandText = @"INSERT INTO ""BlocklistHash"" (""BlocksetID"", ""Index"", ""Hash"") VALUES (?,?,?)";
             m_insertBlocklistHashCommand.AddParameters(3);
             
@@ -177,10 +182,10 @@ namespace Duplicati.Library.Main.Database
             m_findblocklisthashCommand.CommandText = string.Format(@"SELECT DISTINCT ""BlockListHash"" FROM ""{0}"" WHERE ""BlockListHash"" = ? ", m_tempblocklist);
             m_findblocklisthashCommand.AddParameters(1);
             
-            m_findHashBlockCommand.CommandText = @"SELECT ""VolumeID"" FROM ""Block"" WHERE ""Hash"" = ? AND ""Size"" = ? ";
+            m_findHashBlockCommand.CommandText = @"SELECT ""ID"", ""VolumeID"" FROM ""Block"" WHERE ""Hash"" = ? AND ""Size"" = ? ";
             m_findHashBlockCommand.AddParameters(2);
-                        
-            m_insertBlockCommand.CommandText = @"INSERT INTO ""Block"" (""Hash"", ""Size"", ""VolumeID"") VALUES (?,?,?)";
+
+            m_insertBlockCommand.CommandText = @"INSERT INTO ""Block"" (""Hash"", ""Size"", ""VolumeID"") VALUES (?,?,?); SELECT last_insert_rowid();";
             m_insertBlockCommand.AddParameters(3);
             
             m_insertDuplicateBlockCommand.CommandText = @"INSERT INTO ""DuplicateBlock"" (""BlockID"", ""VolumeID"") VALUES ((SELECT ""ID"" FROM ""Block"" WHERE ""Hash"" = ? AND ""Size"" = ?), ?)";
@@ -188,7 +193,7 @@ namespace Duplicati.Library.Main.Database
 
             if (options.BlockHashLookupMemory > 0)
             {
-                m_blockHashLookup = new HashLookupHelper<long>((ulong)options.BlockHashLookupMemory/2);
+                m_blockHashLookup = new HashLookupHelper<KeyValuePair<long, long>>((ulong)options.BlockHashLookupMemory / 2);
                 m_blockListHashLookup = new HashLookupHelper<bool>((ulong)options.BlockHashLookupMemory/2);
             }
             if (options.FileHashLookupMemory > 0)
@@ -233,17 +238,18 @@ namespace Duplicati.Library.Main.Database
                     selectNewBlocks;
                     
                 // Insert all known blocks into block table with volumeid = -1
-                cmd.ExecuteNonQuery(insertBlocksCommand);
+                var blocksInserted = cmd.ExecuteNonQuery(insertBlocksCommand);
                     
                 // Update the cache with new blocks
                 if (m_blockHashLookup != null)
                 {
-                    using(var rd = cmd.ExecuteReader(@"SELECT DISTINCT ""Hash"", ""Size"" FROM ""Block"" WHERE ""VolumeID"" = -1 "))
+                    using(var rd = cmd.ExecuteReader(@"SELECT ""ID"", ""Hash"", ""Size"" FROM ""Block"" WHERE ""VolumeID"" = -1 "))
                         while(rd.Read())
                         {
-                            var hash = rd.GetString(0);
-                            var size = rd.GetInt64(1);
-                            m_blockHashLookup.TryAdd(hash, size, -1);
+                            var id = rd.GetInt64(0);
+                            var hash = rd.GetString(1);
+                            var size = rd.GetInt64(2);
+                            m_blockHashLookup[hash, size] = new KeyValuePair<long, long>(id, -1);
                         }
                 }                
                                                 
@@ -273,9 +279,9 @@ namespace Duplicati.Library.Main.Database
                     @") A WHERE (""A"".""BlocksetID"" || ':' || ""A"".""Index"") NOT IN (SELECT (""BlocksetID"" || ':' || ""Index"") FROM ""BlocksetEntry"" )";
                 
                 var insertBlocksetEntriesCommand =
-                    @"INSERT INTO ""BlocksetEntry"" (""BlocksetID"", ""Index"", ""BlockID"") " + selectFiltered;    
-                
-                cmd.ExecuteNonQuery(insertBlocksetEntriesCommand);                
+                    @"INSERT INTO ""BlocksetEntry"" (""BlocksetID"", ""Index"", ""BlockID"") " + selectFiltered;
+
+                var blocksetEntriesInserted = cmd.ExecuteNonQuery(insertBlocksetEntriesCommand);                
             }
         }
         
@@ -365,7 +371,7 @@ namespace Duplicati.Library.Main.Database
                     return metadataid;
             }
             
-            var blocksetid = AddBlockset(metahash, metahashsize, null, 0, transaction);
+            var blocksetid = AddBlockset(metahash, metahashsize, null, 0, null, false, transaction);
             
             m_insertMetadatasetCommand.Transaction = transaction;
             m_insertMetadatasetCommand.SetParameterValue(0, blocksetid);
@@ -377,7 +383,7 @@ namespace Duplicati.Library.Main.Database
             return metadataid;
         }
         
-        public long AddBlockset(string fullhash, long size, IEnumerable<string> blocklisthashes, long expectedblocklisthashes, System.Data.IDbTransaction transaction)
+        public long AddBlockset(string fullhash, long size, IEnumerable<string> blocklisthashes, long expectedblocklisthashes, IEnumerable<long> expectedblocklistsizes, bool hashesAreBlocks, System.Data.IDbTransaction transaction)
         {
             var blocksetid = -1L;
             if (m_fileHashLookup != null)
@@ -412,18 +418,46 @@ namespace Duplicati.Library.Main.Database
                 m_insertBlocklistHashCommand.SetParameterValue(0, blocksetid);
 
                 long c = 0;
-                foreach(var hash in blocklisthashes)
+                using (IEnumerator<long> expectedsizesEnum = (expectedblocklistsizes == null) ? Enumerable.Repeat<long>(-1, (int)expectedblocklisthashes).GetEnumerator() : expectedblocklistsizes.GetEnumerator())
                 {
-                    if (!string.IsNullOrEmpty(hash))
+                    foreach (var hash in blocklisthashes)
                     {
-                        c++;
-                        if (c <= expectedblocklisthashes)
+                        if (!string.IsNullOrEmpty(hash))
                         {
-                            m_insertBlocklistHashCommand.SetParameterValue(1, index++);
-                            m_insertBlocklistHashCommand.SetParameterValue(2, hash);
-                            m_insertBlocklistHashCommand.ExecuteNonQuery();
+                            c++;
+                            if (c <= expectedblocklisthashes)
+                            {
+                                long nextsize = expectedsizesEnum.MoveNext() ? expectedsizesEnum.Current : -1;
+                                if (!hashesAreBlocks) // default, really blocklisthashes
+                                {
+                                    long blockId = UpdateOrRegisterBlock(hash, nextsize, -1, transaction);
+                                    m_insertBlocklistHashCommand.SetParameterValue(1, index++);
+                                    m_insertBlocklistHashCommand.SetParameterValue(2, hash);
+                                    m_insertBlocklistHashCommand.ExecuteNonQuery();
+                                }
+                                else // otherwise blocklist hashes actually is just a direct list of blocks 
+                                // (currently only single block intended and supported, as we do not process blocksize)
+                                {
+                                    // Add or register block. Insert into block entries table.
+                                    long blockId = UpdateOrRegisterBlock(hash, nextsize, -1, transaction);
+                                    m_insertBlocksetEntry.Transaction = transaction;
+                                    m_insertBlocksetEntry.SetParameterValue(0, blocksetid);
+                                    m_insertBlocksetEntry.SetParameterValue(0, c - 1);
+                                    m_insertBlocksetEntry.SetParameterValue(0, blockId);
+                                }
+                            }
                         }
                     }
+                }
+
+                // As we now already have the logic to directly insert block entries here anyway, we can also insert for "normal" single block files
+                if (expectedblocklisthashes == 0 && c == 0)
+                {
+                    long blockId = UpdateOrRegisterBlock(fullhash, size, -1, transaction);
+                    m_insertBlocksetEntry.Transaction = transaction;
+                    m_insertBlocksetEntry.SetParameterValue(0, blocksetid);
+                    m_insertBlocksetEntry.SetParameterValue(0, 0);
+                    m_insertBlocksetEntry.SetParameterValue(0, blockId);
                 }
 
                 if (c != expectedblocklisthashes) // or is there a legacy with single element blocklist hashes? --> && !(c == 1 && hash == computeBlockHash(fullhash))
@@ -434,67 +468,89 @@ namespace Duplicati.Library.Main.Database
             return blocksetid;
         }
 
-        public bool UpdateBlock(string hash, long size, long volumeID, System.Data.IDbTransaction transaction)
+
+        /// <summary>
+        /// Registers a new or updates an existing block specified by (hash,size) with the passed volumeID if it is valid (positive).
+        /// If a block already has positive volumeID, another positive volumeId is recorded in DuplicateBlock.
+        /// If a negative volumeID is passed, an existing volumeId is only overriden if it was "more" negative before.
+        /// Returns the new or existing BlockId for the block identified by (hash,size).
+        /// If the volumeId to set is long.MinValue, the block will not be added if it was not present before.
+        /// </summary>
+        public long UpdateOrRegisterBlock(string hash, long size, long volumeID, System.Data.IDbTransaction transaction)
         {
-            var currentVolumeId = -2L;
+            long dummy;
+            return UpdateOrRegisterBlock(hash, size, volumeID, transaction, out dummy);
+        }
+
+        /// <summary>
+        /// Registers a new or updates an existing block specified by (hash,size) with the passed volumeID if it is valid (positive).
+        /// If a block already has positive volumeID, another positive volumeId is recorded in DuplicateBlock.
+        /// If a negative volumeID is passed, an existing volumeId is only overriden if it was "more" negative before.
+        /// Returns the new or existing BlockId for the block identified by (hash,size).
+        /// prevVolumeId will be long.MinValue if no block was present before, otherwise the current value found in DB.
+        /// If the volumeId to set is long.MinValue, the block will not be added if it was not present before.
+        /// </summary>
+        public long UpdateOrRegisterBlock(string hash, long size, long volumeID, System.Data.IDbTransaction transaction, out long prevVolumeId)
+        {
+            var blockWithVolId = new KeyValuePair<long, long>(-1, long.MinValue);
             if (m_blockHashLookup != null)
             {
-                if (!m_blockHashLookup.TryGet(hash, size, out currentVolumeId))
-                    currentVolumeId = -2;
+                if (!m_blockHashLookup.TryGet(hash, size, out blockWithVolId))
+                    blockWithVolId = new KeyValuePair<long, long>(-1, -2);
             }
             else
             {
                 m_findHashBlockCommand.Transaction = transaction;
                 m_findHashBlockCommand.SetParameterValue(0, hash);
                 m_findHashBlockCommand.SetParameterValue(1, size);
-                currentVolumeId = m_findHashBlockCommand.ExecuteScalarInt64(-2);
+                var block = m_findHashBlockCommand.ExecuteScalarKeyValue(-1);
+                blockWithVolId = (block.Key == -1) ? new KeyValuePair<long, long>(-1, long.MinValue)
+                    : new KeyValuePair<long, long>(block.Key, Convert.ToInt64(block.Value));
             }
-            
-            if (currentVolumeId == volumeID)
-                return false;
-                
-            if (currentVolumeId == -2)
+
+            prevVolumeId = blockWithVolId.Value;
+
+            if (prevVolumeId == volumeID)
+                return blockWithVolId.Key;
+
+            if (blockWithVolId.Key == -1) // New block
             {
-                //Insert
                 m_insertBlockCommand.Transaction = transaction;
                 m_insertBlockCommand.SetParameterValue(0, hash);
                 m_insertBlockCommand.SetParameterValue(1, size);
                 m_insertBlockCommand.SetParameterValue(2, volumeID);
-                m_insertBlockCommand.ExecuteNonQuery();
-                
-                if (m_blockHashLookup != null)
-                    m_blockHashLookup.Add(hash, size, volumeID);
+                var newBlockId = m_insertBlockCommand.ExecuteScalarInt64();
 
-                return true;
+                if (m_blockHashLookup != null)
+                    m_blockHashLookup[hash, size] = new KeyValuePair<long,long>(newBlockId, volumeID);
+
+                return newBlockId;
             }
-            else if (currentVolumeId == -1)
+            else if (    (volumeID <  0 && volumeID > prevVolumeId) // Update VolId
+                      || (volumeID >= 0 && prevVolumeId < 0))
             {
-                //Update
                 m_updateBlockVolumeCommand.Transaction = transaction;
                 m_updateBlockVolumeCommand.SetParameterValue(0, volumeID);
                 m_updateBlockVolumeCommand.SetParameterValue(1, hash);
                 m_updateBlockVolumeCommand.SetParameterValue(2, size);
                 var c = m_updateBlockVolumeCommand.ExecuteNonQuery();
                 if (c != 1)
-                    throw new Exception(string.Format("Failed to update table, found {0} entries for key {1} with size {2}", c ,hash, size));
-                    
-                if (m_blockHashLookup != null)
-                    m_blockHashLookup.Add(hash, size, volumeID);
+                    throw new Exception(string.Format("Failed to update table, found {0} entries for key {1} with size {2}", c, hash, size));
 
-                return true;
+                if (m_blockHashLookup != null)
+                    m_blockHashLookup[hash, size] = new KeyValuePair<long, long>(blockWithVolId.Key, volumeID);
             }
-            else
+            else if (volumeID >= 0 && prevVolumeId >= 0) // Record duplicate VolId
             {
                 m_insertDuplicateBlockCommand.Transaction = transaction;
                 m_insertDuplicateBlockCommand.SetParameterValue(0, hash);
                 m_insertDuplicateBlockCommand.SetParameterValue(1, size);
                 m_insertDuplicateBlockCommand.SetParameterValue(2, volumeID);
                 m_insertDuplicateBlockCommand.ExecuteNonQuery();
-
-                return false;
-            }            
+            }
+            return blockWithVolId.Key;
         }
-        
+
         public bool UpdateBlockset(string hash, IEnumerable<string> blocklisthashes, System.Data.IDbTransaction transaction)
         {
             if (m_blockListHashLookup != null)
@@ -647,6 +703,7 @@ namespace Duplicati.Library.Main.Database
                 m_insertFilesetEntryCommand,
                 m_insertMetadatasetCommand,
                 m_insertBlocksetCommand,
+                m_insertBlocksetEntry,
                 m_insertBlocklistHashCommand,
                 m_updateBlockVolumeCommand,
                 m_insertBlockset,

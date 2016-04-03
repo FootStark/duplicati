@@ -71,6 +71,8 @@ namespace Duplicati.Library.Main.Volumes
                     m_writer.WriteEndArray();
                 }
             }
+            else if (this.NeedsSingleBlockFileHashes)
+                throw new ArgumentNullException("blocklisthashes", "The file needs an explicit blocklisthash or blockhash entry to be added to the fileset volume.");
 
             m_writer.WriteEndObject();
         }
@@ -126,6 +128,7 @@ namespace Duplicati.Library.Main.Volumes
 
         public long FileCount { get { return m_filecount; } }
         public long FolderCount { get { return m_foldercount; } }
+        public bool NeedsSingleBlockFileHashes { get { return m_filehash != m_blockhash; } }
 
         public void AddSymlink(string name, string metahash, long metasize)
         {

@@ -880,7 +880,10 @@ namespace Duplicati.Library.Main.Database
             using (var cmd = m_connection.CreateCommand())
             {
             	cmd.Transaction = transaction;
-                cmd.CommandText = @"SELECT ""B"".""BlocksetID"", ""B"".""ID"", ""B"".""Path"", ""D"".""Length"", ""D"".""FullHash"", ""A"".""Lastmodified"" FROM ""FilesetEntry"" A, ""File"" B, ""Metadataset"" C, ""Blockset"" D WHERE ""A"".""FileID"" = ""B"".""ID"" AND ""B"".""MetadataID"" = ""C"".""ID"" AND ""C"".""BlocksetID"" = ""D"".""ID"" AND (""B"".""BlocksetID"" = ? OR ""B"".""BlocksetID"" = ?) AND ""A"".""FilesetID"" = ? ";
+                cmd.CommandText = @"SELECT ""B"".""BlocksetID"", ""B"".""ID"", ""B"".""Path"", ""D"".""Length"", ""D"".""FullHash"", ""A"".""Lastmodified"" "
+                                + @"  FROM ""FilesetEntry"" A, ""File"" B, ""Metadataset"" C, ""Blockset"" D "
+                                + @" WHERE ""A"".""FileID"" = ""B"".""ID"" AND ""B"".""MetadataID"" = ""C"".""ID"" AND ""C"".""BlocksetID"" = ""D"".""ID"" "
+                                + @"   AND (""B"".""BlocksetID"" = ? OR ""B"".""BlocksetID"" = ?) AND ""A"".""FilesetID"" = ? ";
                 cmd.AddParameter(FOLDER_BLOCKSET_ID);
                 cmd.AddParameter(SYMLINK_BLOCKSET_ID);
                 cmd.AddParameter(filesetId);
@@ -899,32 +902,64 @@ namespace Duplicati.Library.Main.Database
                         filesetvolume.AddSymlink(path, metahash, metalength);
                 }
 
-                cmd.CommandText = @"SELECT ""F"".""Path"", ""F"".""Lastmodified"", ""F"".""Filelength"", ""F"".""Filehash"", ""F"".""Metahash"", ""F"".""Metalength"", ""G"".""Hash"" FROM (SELECT ""A"".""Path"" AS ""Path"", ""D"".""Lastmodified"" AS ""Lastmodified"", ""B"".""Length"" AS ""Filelength"", ""B"".""FullHash"" AS ""Filehash"", ""E"".""FullHash"" AS ""Metahash"", ""E"".""Length"" AS ""Metalength"", ""A"".""BlocksetID"" AS ""BlocksetID"" FROM ""File"" A, ""Blockset"" B, ""Metadataset"" C, ""FilesetEntry"" D, ""Blockset"" E WHERE ""A"".""ID"" = ""D"".""FileID"" AND ""D"".""FilesetID"" = ? AND ""A"".""BlocksetID"" = ""B"".""ID"" AND ""A"".""MetadataID"" = ""C"".""ID"" AND ""E"".""ID"" = ""C"".""BlocksetID"") F LEFT OUTER JOIN ""BlocklistHash"" G ON ""G"".""BlocksetID"" = ""F"".""BlocksetID"" ORDER BY ""F"".""Path"", ""G"".""Index"" ";
-                cmd.Parameters.Clear();
-                cmd.AddParameter(filesetId);
-
-                using (var rd = cmd.ExecuteReader())
-                if (rd.Read())
+                using (var cmdLookupBlockHash = m_connection.CreateCommand())
                 {
-                    var more = false;
-                    do
-                    {
-                        var path = rd.GetValue(0).ToString();
-                        var filehash = rd.GetValue(3).ToString();
-                        var size = rd.ConvertValueToInt64(2);
-                        var lastmodified = new DateTime(rd.ConvertValueToInt64(1, 0), DateTimeKind.Utc);
-                        var metahash = rd.GetValue(4).ToString();
-                        var metasize = rd.ConvertValueToInt64(5, -1);
-                        var p = rd.GetValue(6);
-                        var blrd = (p == null || p == DBNull.Value) ? null : new BlocklistHashEnumerable(rd);
+                    cmdLookupBlockHash.Transaction = transaction;
+                    cmdLookupBlockHash.CommandText = @"SELECT ""Block"".""Hash"" "
+                                                   + @"  FROM ""BlocksetEntry"" INNER JOIN ""Block"" ON ""Block"".""ID"" = ""BlocksetEntry"".""BlockID"" "
+                                                   + @" WHERE ""BlocksetEntry"".""BlocksetID"" = ? AND ""Block"".""Size"" = ? ";
+                    cmdLookupBlockHash.AddParameters(2);
 
-                        filesetvolume.AddFile(path, filehash, size, lastmodified, metahash, metasize, blrd);
-                        if (blrd == null)
-                            more = rd.Read();
-                        else
-                            more = blrd.MoreData;
+                    cmd.CommandText = @"SELECT ""F"".""Path"", ""F"".""Lastmodified"", ""F"".""Filelength"", ""F"".""Filehash"", ""F"".""Metahash"", ""F"".""Metalength"", ""G"".""Hash"", ""F"".""BlocksetID"""
+                                    + @"  FROM (SELECT ""A"".""Path"" AS ""Path"", ""D"".""Lastmodified"" AS ""Lastmodified"", ""B"".""Length"" AS ""Filelength"", "
+                                    + @"               ""B"".""FullHash"" AS ""Filehash"", ""E"".""FullHash"" AS ""Metahash"", ""E"".""Length"" AS ""Metalength"", ""A"".""BlocksetID"" AS ""BlocksetID"" "
+                                    + @"          FROM ""File"" A, ""Blockset"" B, ""Metadataset"" C, ""FilesetEntry"" D, ""Blockset"" E "
+                                    + @"         WHERE ""A"".""ID"" = ""D"".""FileID"" AND ""D"".""FilesetID"" = ? AND ""A"".""BlocksetID"" = ""B"".""ID"" "
+                                    + @"           AND ""A"".""MetadataID"" = ""C"".""ID"" AND ""E"".""ID"" = ""C"".""BlocksetID"" "
+                                    + @"       ) F LEFT OUTER JOIN ""BlocklistHash"" G ON ""G"".""BlocksetID"" = ""F"".""BlocksetID"" ORDER BY ""F"".""Path"", ""G"".""Index"" ";
+                    cmd.Parameters.Clear();
+                    cmd.AddParameter(filesetId);
 
-                    } while (more);
+                    using (var rd = cmd.ExecuteReader())
+                        if (rd.Read())
+                        {
+                            var more = false;
+                            do
+                            {
+                                var path = rd.GetValue(0).ToString();
+                                var filehash = rd.GetValue(3).ToString();
+                                var size = rd.ConvertValueToInt64(2);
+                                var lastmodified = new DateTime(rd.ConvertValueToInt64(1, 0), DateTimeKind.Utc);
+                                var metahash = rd.GetValue(4).ToString();
+                                var metasize = rd.ConvertValueToInt64(5, -1);
+                                var blocksetId = rd.ConvertValueToInt64(7);
+                                var p = rd.GetValue(6);
+                                bool isSingleBlockFile = (p == null || p == DBNull.Value);
+
+                                var blrd = isSingleBlockFile ? null : new BlocklistHashEnumerable(rd);
+                                IEnumerable<string> blenum = blrd; 
+
+                                // we will write out the hash of a single block file as a blocklist hash if forced to.
+                                // This is used if the blockhashalgo is not equal to the filehashalgo.
+                                // The case is easy to determine on read if file size < blocksize.
+                                if (isSingleBlockFile && filesetvolume.NeedsSingleBlockFileHashes)
+                                {
+                                    cmdLookupBlockHash.SetParameterValue(0, blocksetId);
+                                    cmdLookupBlockHash.SetParameterValue(1, size);
+                                    var singleBlockHash = (cmdLookupBlockHash.ExecuteScalar() ?? "").ToString();
+                                    if (string.IsNullOrWhiteSpace(singleBlockHash))
+                                        throw new Exception(String.Format("Single block hash not found in db for file '{0}'.", path));
+                                    blenum = Enumerable.Repeat(singleBlockHash, 1);
+                                }
+
+                                filesetvolume.AddFile(path, filehash, size, lastmodified, metahash, metasize, blenum);
+                                if (blrd == null)
+                                    more = rd.Read();
+                                else
+                                    more = blrd.MoreData;
+
+                            } while (more);
+                        }
                 }
             }
         }

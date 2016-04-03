@@ -170,7 +170,7 @@ namespace Duplicati.Library.Main.Operation
                 {
                     using(var rd = new Volumes.FilesetVolumeReader(parsedInfo.CompressionModule, tf, options))
                         foreach(var f in rd.Files)
-                            fl.Add(f.Path, f.Size, f.Hash, f.Metasize, f.Metahash, f.BlocklistHashes, f.Type, f.Time);
+                            fl.Add(f.Path, f.Size, f.Hash, f.Metasize, f.Metahash, f.Type, f.Time);
                                     
                     return new KeyValuePair<string, IEnumerable<KeyValuePair<TestEntryStatus, string>>>(vol.Name, fl.Compare().ToList());
                 }       

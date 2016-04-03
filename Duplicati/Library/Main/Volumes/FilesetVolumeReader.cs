@@ -338,7 +338,8 @@ namespace Duplicati.Library.Main.Volumes
         }
 
         public IEnumerable<IFileEntry> Files { get { return new FileEntryEnumerable(m_compression); } }
-
         public IEnumerable<KeyValuePair<string, Stream>> ControlFiles { get { return new ControlFileEnumerable(m_compression); } }
+        public bool ShouldHaveSingleBlockFileHashes { get { return m_filehash != m_blockhash; } }
+
     }
 }

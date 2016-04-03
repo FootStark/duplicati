@@ -103,7 +103,26 @@ namespace Duplicati.Library.Main
                 return lst.TryGetValue(hash + ':' + size.ToString(), out value);
             }
         }
-        
+
+        public T this[string hash, long size]
+        {
+            get
+            {
+                T retVal;
+                if (!this.TryGet(hash, size, out retVal))
+                    throw new KeyNotFoundException();
+                return retVal;
+            }
+            set
+            {
+                var key = DecodeBase64Hash(hash) % m_entries;
+                var lst = m_lookup[key];
+                if (lst == null)
+                    lst = m_lookup[key] = new SortedList<string, T>(1);
+                lst[hash + ':' + size.ToString()] = value;
+            }
+        }
+
         /// <summary>
         /// Hex digit ASCII lookup table
         /// </summary>
