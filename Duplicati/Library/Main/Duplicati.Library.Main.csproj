@@ -168,7 +168,7 @@
   -->
   <ItemGroup>
     <EmbeddedResource Include="Database\Database schema\5. Optimize BlockSet-Tables.sql" />
-    <Content Include="Database\Database schema\6. Transform BlocklistHashes to BlocklistEntry.sql" />
+    <EmbeddedResource Include="Database\Database schema\6. Transform BlocklistHashes to BlocklistEntry.sql" />
     <Content Include="default_compressed_extensions.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

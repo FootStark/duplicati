@@ -246,14 +246,11 @@ namespace Duplicati.Library.SQLiteHelper
 
                     for (int i = dbversion; i < versions.Count; i++)
                     {
-                        //TODO: Find a better way to split SQL statements, as there may be embedded semicolons
-                        //in the SQL, like "UPDATE x WHERE y = ';';"
-                        
                         // Preparse before splitting to enable statement spanning conditional blocks
                         string versionscript = PreparseSQL(versions[i], preparserVars);
-
-                        //We split them to get a better error message
-                        foreach (string c in versionscript.Split(';'))
+                        
+                        //We split them to get a better error message (Split at ";" at end of lines to not interfere with inline ";")
+                        foreach (string c in Regex.Split(versionscript, @"\;\s*\r?$", RegexOptions.Multiline))
                             if (c.Trim().Length > 0)
                             {
                                 cmd.CommandText = c;

@@ -1,4 +1,5 @@
-﻿
+﻿BEGIN TRANSACTION;
+
 DROP INDEX "BlocksetEntryIds_Forward";
 DROP INDEX "BlocksetEntryIds_Backwards";
 
@@ -28,3 +29,8 @@ CREATE INDEX "Block_IndexByVolumeId" ON "Block" ("VolumeID");
 
 
 UPDATE "Version" SET "Version" = 5;
+
+COMMIT;
+
+/* As we deleted a rather large table, it is good practice to compact db. */
+VACUUM;

@@ -11,6 +11,7 @@ If this is the case, there is likely a backup file of the previous database vers
         public static string TableLayoutError { get { return LC.L(@"Unknown table layout detected"); } }
         public static string UpgradeFailure(string sql, string message) { return LC.L(@"Failed to execute SQL: {0}
 Error: {1}
-Database is NOT upgraded.", sql, message); }
+Database is NOT upgraded. Please either run repair on older version and try again, or try a complete database rebuild with the new version.", sql, message);
+        }
     }
 }
