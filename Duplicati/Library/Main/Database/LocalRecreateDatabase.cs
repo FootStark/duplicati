@@ -152,7 +152,7 @@ namespace Duplicati.Library.Main.Database
             m_insertFilesetEntryCommand.CommandText = @"INSERT INTO ""FilesetEntry"" (""FilesetID"", ""FileID"", ""Lastmodified"") VALUES (?,?,?)";
             m_insertFilesetEntryCommand.AddParameters(3);
 
-            m_insertMetadatasetCommand.CommandText = @"INSERT INTO ""Metadataset"" (""BlocksetID"") VALUES (?); SELECT last_insert_rowid();";
+            m_insertMetadatasetCommand.CommandText = @"INSERT INTO ""MetadataBlockset"" (""BlocksetID"") VALUES (?); SELECT last_insert_rowid();";
             m_insertMetadatasetCommand.AddParameters(1);
             
             m_insertBlocksetCommand.CommandText = @"INSERT INTO ""Blockset"" (""Length"", ""FullHash"") VALUES (?,?); SELECT last_insert_rowid();";
@@ -172,8 +172,8 @@ namespace Duplicati.Library.Main.Database
             
             m_findBlocksetCommand.CommandText = @"SELECT ""ID"" FROM ""Blockset"" WHERE ""Length"" = ? AND ""FullHash"" = ? ";
             m_findBlocksetCommand.AddParameters(2);
-            
-            m_findMetadatasetCommand.CommandText = @"SELECT ""Metadataset"".""ID"" FROM ""Metadataset"",""Blockset"" WHERE ""Metadataset"".""BlocksetID"" = ""Blockset"".""ID"" AND ""Blockset"".""FullHash"" = ? AND ""Blockset"".""Length"" = ? ";
+
+            m_findMetadatasetCommand.CommandText = @"SELECT ""MetadataBlockset"".""BlocksetID"" FROM ""MetadataBlockset"",""Blockset"" WHERE ""MetadataBlockset"".""BlocksetID"" = ""Blockset"".""ID"" AND ""Blockset"".""FullHash"" = ? AND ""Blockset"".""Length"" = ? ";
             m_findMetadatasetCommand.AddParameters(2);
             
             m_findFilesetCommand.CommandText = @"SELECT ""ID"" FROM ""File"" WHERE ""Path"" = ? AND ""BlocksetID"" = ? AND ""MetadataID"" = ? ";

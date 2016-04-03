@@ -26,75 +26,18 @@ namespace Duplicati.Library.Main
 {
     public class Utility
     {
-        /// <summary>
-        /// Implementation of the IMetahash interface
-        /// </summary>
-        private class Metahash : IMetahash
-        {
-            /// <summary>
-            /// The base64 encoded hash
-            /// </summary>
-            private readonly string m_hash;
-            /// <summary>
-            /// The UTF-8 encoded json element with the metadata
-            /// </summary>
-            private readonly byte[] m_blob;
-            /// <summary>
-            /// The lookup table with elements
-            /// </summary>
-            private readonly Dictionary<string, string> m_values;
-    
-            public Metahash(Dictionary<string, string> values, Options options)
-            {
-                m_values = values;
-                var hasher = System.Security.Cryptography.HashAlgorithm.Create(options.BlockHashAlgorithm);
-                if (hasher == null)
-                    throw new Exception(Strings.Common.InvalidHashAlgorithm(options.BlockHashAlgorithm));
-                if (!hasher.CanReuseTransform)
-                    throw new Exception(Strings.Common.InvalidCryptoSystem(options.BlockHashAlgorithm));
-                    
-                using (var ms = new System.IO.MemoryStream())
-                using (var w = new StreamWriter(ms, Encoding.UTF8))
-                {
-                    w.Write(JsonConvert.SerializeObject(values));
-                    w.Flush();
-    
-                    m_blob = ms.ToArray();
-    
-                    ms.Position = 0;
-                    m_hash = Convert.ToBase64String(hasher.ComputeHash(ms));
-                }
-            }
-    
-            public string Hash
-            {
-                get { return m_hash; }
-            }
-    
-            public long Size
-            {
-                get { return m_blob.Length; }
-            }
-    
-            public byte[] Blob
-            {
-                get { return m_blob; }
-            }
-    
-            public Dictionary<string, string> Values
-            {
-                get { return m_values; }
-            }
-        }
-    
+
         /// <summary>
         /// Constructs a container for a given metadata dictionary
         /// </summary>
         /// <param name="values">The metadata values to wrap</param>
         /// <returns>A IMetahash instance</returns>
-        public static IMetahash WrapMetadata(Dictionary<string, string> values, Options options)
+        public static Stream WrapMetadata(Dictionary<string, string> values)
         {
-            return new Metahash(values, options);
+            var buf = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(values));
+            var retMs = new System.IO.MemoryStream(buf);
+            retMs.Position = 0;
+            return retMs;
         }
 
         internal static void UpdateOptionsFromDb(LocalDatabase db, Options options, System.Data.IDbTransaction transaction = null)

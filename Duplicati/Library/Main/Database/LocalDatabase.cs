@@ -411,7 +411,7 @@ namespace Duplicati.Library.Main.Database
                 deletecmd.Parameters.Clear();
 
                 deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""File"" WHERE ""BlocksetID"" IN ({0}) OR ""MetadataID"" IN ({0})", bsIdsSubQuery));
-                deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""Metadataset"" WHERE ""BlocksetID"" IN ({0})", bsIdsSubQuery));
+                deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""MetadataBlockset"" WHERE ""BlocksetID"" IN ({0})", bsIdsSubQuery));
                 deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""Blockset"" WHERE ""ID"" IN ({0})", bsIdsSubQuery));
                 deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""BlocksetEntry"" WHERE ""BlocksetID"" IN ({0})", bsIdsSubQuery));
 
@@ -644,7 +644,7 @@ namespace Duplicati.Library.Main.Database
         public IEnumerable<ILocalFileEntry> GetFiles(long filesetId)
         {
             using(var cmd = m_connection.CreateCommand())
-            using(var rd = cmd.ExecuteReader(@"SELECT ""A"".""Path"", ""B"".""Length"", ""B"".""FullHash"", ""D"".""FullHash"" FROM ""File"" A, ""Blockset"" B, ""Metadataset"" C, ""Blockset"" D, ""FilesetEntry"" E WHERE ""A"".""BlocksetID"" = ""B"".""ID"" AND ""A"".""MetadataID"" = ""C"".""ID"" AND ""C"".""BlocksetID"" = ""D"".""ID"" AND ""A"".""ID"" = ""E"".""FileID"" AND ""E"".""FilesetID"" = ? ", filesetId))
+            using (var rd = cmd.ExecuteReader(@"SELECT ""A"".""Path"", ""B"".""Length"", ""B"".""FullHash"", ""D"".""FullHash"" FROM ""File"" A, ""Blockset"" B, ""MetadataBlockset"" C, ""Blockset"" D, ""FilesetEntry"" E WHERE ""A"".""BlocksetID"" = ""B"".""ID"" AND ""A"".""MetadataID"" = ""C"".""BlocksetID"" AND ""C"".""BlocksetID"" = ""D"".""ID"" AND ""A"".""ID"" = ""E"".""FileID"" AND ""E"".""FilesetID"" = ? ", filesetId))
             while(rd.Read())
             	yield return new LocalFileEntry(rd);
         }
@@ -881,8 +881,8 @@ namespace Duplicati.Library.Main.Database
             {
             	cmd.Transaction = transaction;
                 cmd.CommandText = @"SELECT ""B"".""BlocksetID"", ""B"".""ID"", ""B"".""Path"", ""D"".""Length"", ""D"".""FullHash"", ""A"".""Lastmodified"" "
-                                + @"  FROM ""FilesetEntry"" A, ""File"" B, ""Metadataset"" C, ""Blockset"" D "
-                                + @" WHERE ""A"".""FileID"" = ""B"".""ID"" AND ""B"".""MetadataID"" = ""C"".""ID"" AND ""C"".""BlocksetID"" = ""D"".""ID"" "
+                                + @"  FROM ""FilesetEntry"" A, ""File"" B, ""MetadataBlockset"" C, ""Blockset"" D "
+                                + @" WHERE ""A"".""FileID"" = ""B"".""ID"" AND ""B"".""MetadataID"" = ""C"".""BlocksetID"" AND ""C"".""BlocksetID"" = ""D"".""ID"" "
                                 + @"   AND (""B"".""BlocksetID"" = ? OR ""B"".""BlocksetID"" = ?) AND ""A"".""FilesetID"" = ? ";
                 cmd.AddParameter(FOLDER_BLOCKSET_ID);
                 cmd.AddParameter(SYMLINK_BLOCKSET_ID);
@@ -913,9 +913,9 @@ namespace Duplicati.Library.Main.Database
                     cmd.CommandText = @"SELECT ""F"".""Path"", ""F"".""Lastmodified"", ""F"".""Filelength"", ""F"".""Filehash"", ""F"".""Metahash"", ""F"".""Metalength"", ""G"".""Hash"", ""F"".""BlocksetID"""
                                     + @"  FROM (SELECT ""A"".""Path"" AS ""Path"", ""D"".""Lastmodified"" AS ""Lastmodified"", ""B"".""Length"" AS ""Filelength"", "
                                     + @"               ""B"".""FullHash"" AS ""Filehash"", ""E"".""FullHash"" AS ""Metahash"", ""E"".""Length"" AS ""Metalength"", ""A"".""BlocksetID"" AS ""BlocksetID"" "
-                                    + @"          FROM ""File"" A, ""Blockset"" B, ""Metadataset"" C, ""FilesetEntry"" D, ""Blockset"" E "
+                                    + @"          FROM ""File"" A, ""Blockset"" B, ""MetadataBlockset"" C, ""FilesetEntry"" D, ""Blockset"" E "
                                     + @"         WHERE ""A"".""ID"" = ""D"".""FileID"" AND ""D"".""FilesetID"" = ? AND ""A"".""BlocksetID"" = ""B"".""ID"" "
-                                    + @"           AND ""A"".""MetadataID"" = ""C"".""ID"" AND ""E"".""ID"" = ""C"".""BlocksetID"" "
+                                    + @"           AND ""A"".""MetadataID"" = ""C"".""BlocksetID"" AND ""E"".""ID"" = ""C"".""BlocksetID"" "
                                     + @"       ) F LEFT OUTER JOIN ""BlocklistHash"" G ON ""G"".""BlocksetID"" = ""F"".""BlocksetID"" ORDER BY ""F"".""Path"", ""G"".""Index"" ";
                     cmd.Parameters.Clear();
                     cmd.AddParameter(filesetId);

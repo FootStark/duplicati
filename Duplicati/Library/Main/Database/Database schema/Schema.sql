@@ -95,18 +95,6 @@ CREATE TABLE "File" (
 CREATE UNIQUE INDEX "FilePath" ON "File" ("Path", "BlocksetID", "MetadataID");
 
 /*
-The blocklist hashes are hashes of
-fragments of the blocklists.
-They are grouped by the BlocksetID
-and ordered by the index
-*/
-CREATE TABLE "BlocklistHash" (
-	"BlocksetID" INTEGER NOT NULL,
-	"Index" INTEGER NOT NULL,
-	"Hash" TEXT NOT NULL
-);
-
-/*
 The blockset is a list of blocks
 Note that Length is actually redundant,
 it can be calculated by 
@@ -123,6 +111,24 @@ CREATE TABLE "Blockset" (
 CREATE UNIQUE INDEX "BlocksetFullHash" ON "Blockset" ("FullHash", "Length");
 
 /*
+Blocklists are indexed blocks storing a list of hashes
+of the real blocks for blockset reconstruction.
+They are grouped by the BlocksetID
+and ordered by the index.
+From Db v6 replaces table "BlocklistHash"
+["WITHOUT ROWID" available since SQLite v3.8.2 (= System.Data.SQLite v1.0.90.0, rel 2013-12-23)]
+*/
+CREATE TABLE "BlocklistEntry" (
+	"BlocksetID" INTEGER NOT NULL,
+	"Index" INTEGER NOT NULL,
+	"BlockID" INTEGER NOT NULL,
+	CONSTRAINT "BlocksetEntry_PK_IdIndex" PRIMARY KEY ("BlocksetID", "Index")
+) {#if sqlite_version >= 3.8.2} WITHOUT ROWID {#endif};
+/* As this table is a cross table we need fast lookup */
+CREATE INDEX "BlocklistEntry_IndexIdsBackwards" ON "BlocklistEntry" ("BlockID");
+
+
+/*
 The elements of a blocklist,
 the hash is the block hash,
 they are grouped by the BlocksetID
@@ -131,7 +137,6 @@ For general speed and storage improvement
 we use a table with option "WITHOUT ROWID"
 ["WITHOUT ROWID" available since SQLite v3.8.2 (= System.Data.SQLite v1.0.90.0, rel 2013-12-23)]
 */
-  
 CREATE TABLE "BlocksetEntry" (
 	"BlocksetID" INTEGER NOT NULL,
 	"Index" INTEGER NOT NULL,
@@ -183,14 +188,13 @@ CREATE TABLE "DuplicateBlock" (
 
 /*
 A metadata set, essentially a placeholder
-to easily extend metadatasets with new properties
+to easily extend metadatasets with new properties.
+To reduce indirection, The blocklistId is now directly used as MetadataSetId.
+Replaces old table "Metadataset".
 */
-CREATE TABLE "Metadataset" (
-	"ID" INTEGER PRIMARY KEY,
-	"BlocksetID" INTEGER NOT NULL
+CREATE TABLE "MetadataBlockset" (
+	"BlocksetID" INTEGER PRIMARY KEY,
 );
-
-CREATE INDEX "MetadatasetBlocksetID" ON "Metadataset" ("BlocksetID");
 
 /*
 Operations performed on the backend,
@@ -237,4 +241,4 @@ CREATE TABLE "Configuration" (
 	"Value" TEXT NOT NULL
 );
 
-INSERT INTO "Version" ("Version") VALUES (5);
+INSERT INTO "Version" ("Version") VALUES (6);

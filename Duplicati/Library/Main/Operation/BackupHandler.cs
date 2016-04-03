@@ -24,7 +24,7 @@ namespace Duplicati.Library.Main.Operation
         private BlockVolumeWriter m_blockvolume;
         private IndexVolumeWriter m_indexvolume;
 
-        private readonly IMetahash EMPTY_METADATA;
+        private readonly Stream EMPTY_METADATA;
         
         private Library.Utility.IFilter m_filter;
         private Library.Utility.IFilter m_sourceFilter;
@@ -44,7 +44,7 @@ namespace Duplicati.Library.Main.Operation
 
         public BackupHandler(string backendurl, Options options, BackupResults results)
         {
-        	EMPTY_METADATA = Utility.WrapMetadata(new Dictionary<string, string>(), options);
+        	EMPTY_METADATA = Utility.WrapMetadata(new Dictionary<string, string>());
         	
             m_options = options;
             m_result = results;
@@ -883,8 +883,8 @@ namespace Duplicati.Library.Main.Operation
                         if (!metadata.ContainsKey("CoreSymlinkTarget"))
                             metadata["CoreSymlinkTarget"] = snapshot.GetSymlinkTarget(path);
     
-                        var metahash = Utility.WrapMetadata(metadata, m_options);
-                        AddSymlinkToOutput(backend, path, DateTime.UtcNow, metahash);
+                        Stream meta = Utility.WrapMetadata(metadata);
+                        AddSymlinkToOutput(backend, path, DateTime.UtcNow, meta);
                         
                         m_result.AddVerboseMessage("Stored symlink {0}", path);
                         //Do not recurse symlinks
@@ -894,19 +894,11 @@ namespace Duplicati.Library.Main.Operation
     
                 if ((attributes & FileAttributes.Directory) == FileAttributes.Directory)
                 {
-                    IMetahash metahash;
-    
-                    if (m_options.StoreMetadata)
-                    {
-                        metahash = Utility.WrapMetadata(GenerateMetadata(snapshot, path, attributes), m_options);
-                    }
-                    else
-                    {
-                        metahash = EMPTY_METADATA;
-                    }
+                    var meta = m_options.StoreMetadata ?
+                         Utility.WrapMetadata(GenerateMetadata(snapshot, path, attributes)) : EMPTY_METADATA;
     
                     m_result.AddVerboseMessage("Adding directory {0}", path);
-                    AddFolderToOutput(backend, path, lastwrite, metahash);
+                    AddFolderToOutput(backend, path, lastwrite, meta);
                     return true;
                 }
     
@@ -925,14 +917,19 @@ namespace Duplicati.Library.Main.Operation
                 try { filestatsize = snapshot.GetFileSize(path); }
                 catch { }
 
-                IMetahash metahashandsize = m_options.StoreMetadata ? Utility.WrapMetadata(GenerateMetadata(snapshot, path, attributes), m_options) : EMPTY_METADATA;
+                var metaStream = m_options.StoreMetadata ? Utility.WrapMetadata(GenerateMetadata(snapshot, path, attributes)) : EMPTY_METADATA;
+                var metaSize = metaStream.Length;
+                m_filehasher.Initialize();
+                var metaFullHash = Convert.ToBase64String(m_filehasher.ComputeHash(metaStream));
 
                 var timestampChanged = lastwrite != oldModified || lastwrite.Ticks == 0 || oldModified.Ticks == 0;
                 var filesizeChanged = filestatsize < 0 || lastFileSize < 0 || filestatsize != lastFileSize;
                 var tooLargeFile = m_options.SkipFilesLargerThan != long.MaxValue && m_options.SkipFilesLargerThan != 0 && filestatsize >= 0 && filestatsize > m_options.SkipFilesLargerThan;
-                var metadatachanged = !m_options.SkipMetadata && (metahashandsize.Size != oldMetasize || metahashandsize.Hash != oldMetahash);
+                var metadatachanged = !m_options.SkipMetadata && (metaSize != oldMetasize || metaFullHash != oldMetahash);
 
-                if ((oldId < 0 || m_options.DisableFiletimeCheck || timestampChanged || filesizeChanged || metadatachanged) && !tooLargeFile)
+                bool hasMissingBlocks = false; //TODO: Query if file has missing blocks in last backup --> if so, examine in any case
+
+                if ((oldId < 0 || m_options.DisableFiletimeCheck || timestampChanged || filesizeChanged || metadatachanged || hasMissingBlocks) && !tooLargeFile)
                 {
                     m_result.AddVerboseMessage("Checking file for changes {0}, new: {1}, timestamp changed: {2}, size changed: {3}, metadatachanged: {4}, {5} vs {6}", path, oldId <= 0, timestampChanged, filesizeChanged, metadatachanged, lastwrite, oldModified);
 
@@ -954,7 +951,6 @@ namespace Duplicati.Library.Main.Operation
                             int blocklistoffset = 0;
 
                             m_filehasher.Initialize();
-
                             
                             var offset = 0;
                             var remaining = fs.Readblock();
@@ -1032,13 +1028,13 @@ namespace Duplicati.Library.Main.Operation
 					            	m_result.AddDryrunMessage(string.Format("Would add changed file {0}, size {1}", path, Library.Utility.Utility.FormatSizeString(filesize)));
                             }
 
-                            AddFileToOutput(backend, path, filesize, lastwrite, metahashandsize, hashcollector, filekey, blocklisthashes);
+                            AddFileToOutput(backend, path, filesize, lastwrite, metaStream, hashcollector, filekey, blocklisthashes);
                             changed = true;
                         }
                         else if (metadatachanged)
                         {
                             m_result.AddVerboseMessage("File has only metadata changes {0}", path);
-                            AddFileToOutput(backend, path, filesize, lastwrite, metahashandsize, hashcollector, filekey, blocklisthashes);
+                            AddFileToOutput(backend, path, filesize, lastwrite, metaStream, hashcollector, filekey, blocklisthashes);
                             changed = true;
                         }
                         else
@@ -1168,6 +1164,43 @@ namespace Duplicati.Library.Main.Operation
 
 
         /// <summary>
+        /// Adds a metadata entry to the output. 
+        /// </summary>
+        private bool AddMetadataToOutput(BackendManager backend, Stream meta, out long retMetadataId)
+        {
+            if (meta == null) { retMetadataId = -1; return false; }
+
+            if (meta.Length > m_blocksize)
+                throw new InvalidDataException(string.Format("Too large metadata, cannot handle more than {0} bytes", m_blocksize));
+
+            // TODO: Process metadata as multiblock with BlockProcessor.
+
+            m_filehasher.Initialize();
+            meta.Position = 0;
+            string fullHash = Convert.ToBase64String(m_filehasher.ComputeHash(meta));
+
+            string blockHash;
+            if (m_options.BlockHashAlgorithm != m_options.FileHashAlgorithm)
+            {
+                meta.Position = 0;
+                m_blockhasher.Initialize();
+                blockHash = Convert.ToBase64String(m_blockhasher.ComputeHash(meta));
+            }
+            else
+                blockHash = fullHash;
+
+            meta.Position = 0;
+            byte[] buf = new byte[meta.Length];
+            while (meta.Read(buf, (int)meta.Position, (int)(meta.Length - meta.Position)) != 0) { }
+
+            bool r = false;
+            r |= AddBlockToOutput(backend, fullHash, buf, 0, buf.Length, CompressionHint.Default, false);
+            r |= m_database.AddMetadataset(fullHash, meta.Length, m_blocksize, m_blockhasher.HashSize / 8, new[] { blockHash }, null, out retMetadataId, m_transaction);
+
+            return r;
+        }
+
+        /// <summary>
         /// Adds a file to the output, 
         /// </summary>
         /// <param name="filename">The name of the file to record</param>
@@ -1176,17 +1209,10 @@ namespace Duplicati.Library.Main.Operation
         /// <param name="size">The size of the file</param>
         /// <param name="fragmentoffset">The offset into a fragment block where the last few bytes are stored</param>
         /// <param name="metadata">A lookup table with various metadata values describing the file</param>
-        private bool AddFolderToOutput(BackendManager backend, string filename, DateTime lastModified, IMetahash meta)
+        private bool AddFolderToOutput(BackendManager backend, string filename, DateTime lastModified, Stream meta)
         {
             long metadataid;
-            bool r = false;
-
-            if (meta.Size > m_blocksize)
-                throw new InvalidDataException(string.Format("Too large metadata, cannot handle more than {0} bytes", m_blocksize));
-
-            r |= AddBlockToOutput(backend, meta.Hash, meta.Blob, 0, (int)meta.Size, CompressionHint.Default, false);
-            r |= m_database.AddMetadataset(meta.Hash, meta.Size, out metadataid, m_transaction);
-
+            bool r = AddMetadataToOutput(backend, meta, out metadataid);
             m_database.AddDirectoryEntry(filename, metadataid, lastModified, m_transaction);
             return r;
         }
@@ -1200,17 +1226,10 @@ namespace Duplicati.Library.Main.Operation
         /// <param name="size">The size of the file</param>
         /// <param name="fragmentoffset">The offset into a fragment block where the last few bytes are stored</param>
         /// <param name="metadata">A lookup table with various metadata values describing the file</param>
-        private bool AddSymlinkToOutput(BackendManager backend, string filename, DateTime lastModified, IMetahash meta)
+        private bool AddSymlinkToOutput(BackendManager backend, string filename, DateTime lastModified, Stream meta)
         {
             long metadataid;
-            bool r = false;
-
-            if (meta.Size > m_blocksize)
-                throw new InvalidDataException(string.Format("Too large metadata, cannot handle more than {0} bytes", m_blocksize));
-
-            r |= AddBlockToOutput(backend, meta.Hash, meta.Blob, 0, (int)meta.Size, CompressionHint.Default, false);
-            r |= m_database.AddMetadataset(meta.Hash, meta.Size, out metadataid, m_transaction);
-
+            bool r = AddMetadataToOutput(backend, meta, out metadataid);
             m_database.AddSymlinkEntry(filename, metadataid, lastModified, m_transaction);
             return r;
         }
@@ -1224,19 +1243,13 @@ namespace Duplicati.Library.Main.Operation
         /// <param name="size">The size of the file</param>
         /// <param name="fragmentoffset">The offset into a fragment block where the last few bytes are stored</param>
         /// <param name="metadata">A lookup table with various metadata values describing the file</param>
-        private void AddFileToOutput(BackendManager backend, string filename, long size, DateTime lastmodified, IMetahash metadata, IEnumerable<string> hashlist, string filehash, IEnumerable<string> blocklisthashes)
+        private void AddFileToOutput(BackendManager backend, string filename, long size, DateTime lastmodified, Stream meta, IEnumerable<string> hashlist, string filehash, IEnumerable<string> blocklisthashes)
         {
             long metadataid;
             long blocksetid;
-            
-            if (metadata.Size > m_blocksize)
-                throw new InvalidDataException(string.Format("Too large metadata, cannot handle more than {0} bytes", m_blocksize));
 
-            AddBlockToOutput(backend, metadata.Hash, metadata.Blob, 0, (int)metadata.Size, CompressionHint.Default, false);
-            m_database.AddMetadataset(metadata.Hash, metadata.Size, out metadataid, m_transaction);
-
-            m_database.AddBlockset(filehash, size, m_blocksize, hashlist, blocklisthashes, out blocksetid, m_transaction);
-
+            bool r = AddMetadataToOutput(backend, meta, out metadataid);
+            m_database.AddBlockset(filehash, size, m_blocksize, m_blockhasher.HashSize / 8, hashlist, blocklisthashes, out blocksetid, m_transaction);
             m_database.AddFile(filename, lastmodified, blocksetid, metadataid, m_transaction);
         }
 

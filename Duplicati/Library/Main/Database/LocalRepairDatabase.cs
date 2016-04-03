@@ -233,68 +233,12 @@ namespace Duplicati.Library.Main.Database
             return new MissingBlockList(volumename, m_connection, transaction);
         }
 
+        [Obsolete("With new design, this actually can't happen anymore (BlocksetID itself is PRIMARY KEY). Remove calls.")]
         public void FixDuplicateMetahash()
         {
-            using(var tr = m_connection.BeginTransaction())
-            using(var cmd = m_connection.CreateCommand(tr))
-            {
-                cmd.Transaction = tr;
-
-                var sql_count = 
-                    @"SELECT COUNT(*) FROM (" +
-                    @" SELECT DISTINCT c1 FROM (" +
-                    @"SELECT COUNT(*) AS ""C1"" FROM (SELECT DISTINCT ""BlocksetID"" FROM ""Metadataset"") UNION SELECT COUNT(*) AS ""C1"" FROM ""Metadataset"" " +
-                    @")" +
-                    @")";
-
-                var x = cmd.ExecuteScalarInt64(sql_count, 0);
-                if (x > 1)
-                {
-                    m_result.AddMessage("Found duplicate metadatahashes, repairing");
-
-                    var tablename = "TmpFile-" + Guid.NewGuid().ToString("N");
-
-                    cmd.ExecuteNonQuery(string.Format(@"CREATE TEMPORARY TABLE ""{0}"" AS SELECT * FROM ""File""", tablename));
-
-                    var sql = @"SELECT ""A"".""ID"", ""B"".""BlocksetID"" FROM (SELECT MIN(""ID"") AS ""ID"", COUNT(""ID"") AS ""Duplicates"" FROM ""Metadataset"" GROUP BY ""BlocksetID"") ""A"", ""Metadataset"" ""B"" WHERE ""A"".""Duplicates"" > 1 AND ""A"".""ID"" = ""B"".""ID""";
-
-                    using(var c2 = m_connection.CreateCommand(tr))
-                    {
-                        c2.CommandText = string.Format(@"UPDATE ""{0}"" SET ""MetadataID"" = ? WHERE ""MetadataID"" IN (SELECT ""ID"" FROM ""Metadataset"" WHERE ""BlocksetID"" = ?)", tablename);
-                        c2.CommandText += @"; DELETE FROM ""Metadataset"" WHERE ""BlocksetID"" = ? AND ""ID"" != ?";
-                        using(var rd = cmd.ExecuteReader(sql))
-                            while (rd.Read())
-                                c2.ExecuteNonQuery(null, rd.GetValue(0), rd.GetValue(1), rd.GetValue(1), rd.GetValue(0));
-                    }
-
-                    sql = string.Format(@"SELECT ""ID"", ""Path"", ""BlocksetID"", ""MetadataID"", ""Entries"" FROM (
-                            SELECT MIN(""ID"") AS ""ID"", ""Path"", ""BlocksetID"", ""MetadataID"", COUNT(*) as ""Entries"" FROM ""{0}"" GROUP BY ""Path"", ""BlocksetID"", ""MetadataID"") 
-                            WHERE ""Entries"" > 1 ORDER BY ""ID""", tablename);
-
-                    using(var c2 = m_connection.CreateCommand())
-                    {
-                        c2.Transaction = tr;
-                        c2.CommandText = string.Format(@"UPDATE ""FilesetEntry"" SET ""FileID"" = ? WHERE ""FileID"" IN (SELECT ""ID"" FROM ""{0}"" WHERE ""Path"" = ? AND ""BlocksetID"" = ? AND ""MetadataID"" = ?)", tablename);
-                        c2.CommandText += string.Format(@"; DELETE FROM ""{0}"" WHERE ""Path"" = ? AND ""BlocksetID"" = ? AND ""MetadataID"" = ? AND ""ID"" != ?", tablename);
-                        foreach(var rd in cmd.ExecuteReaderEnumerable(sql))
-                            c2.ExecuteNonQuery(null, rd.GetValue(0), rd.GetValue(1), rd.GetValue(2), rd.GetValue(3), rd.GetValue(1), rd.GetValue(2), rd.GetValue(3), rd.GetValue(0));
-                    }
-
-                    cmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""File"" WHERE ""ID"" NOT IN (SELECT ""ID"" FROM ""{0}"") ", tablename));
-                    cmd.ExecuteNonQuery(string.Format(@"CREATE INDEX ""{0}-Ix"" ON  ""{0}"" (""ID"", ""MetadataID"")", tablename));
-                    cmd.ExecuteNonQuery(string.Format(@"UPDATE ""File"" SET ""MetadataID"" = (SELECT ""MetadataID"" FROM ""{0}"" A WHERE ""A"".""ID"" = ""File"".""ID"") ", tablename));
-                    cmd.ExecuteNonQuery(string.Format(@"DROP TABLE ""{0}"" ", tablename));
-
-                    cmd.CommandText = sql_count;
-                    x = cmd.ExecuteScalarInt64(0);
-                    if (x > 1)
-                        throw new Exception("Repair failed, there are still duplicate metadatahashes!");
-
-                    m_result.AddMessage("Duplicate metadatahashes repaired succesfully");
-                    tr.Commit();
-                }
-            }
-        }
+            // With new design, this actually can't happen anymore (BlocksetID itself is PRIMARY KEY).
+            return;
+       }
 
         public void FixDuplicateFileentries()
         {
