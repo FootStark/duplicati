@@ -74,6 +74,7 @@ namespace Duplicati.Library.Main.Database
         private readonly System.Data.IDbCommand m_insertblocksetentryFastCommand;
         private readonly System.Data.IDbCommand m_insertblocksetentryCommand;
         private readonly System.Data.IDbCommand m_insertblocklistHashesCommand;
+        private readonly System.Data.IDbCommand m_insertblocklistHashesFastCommand;
 
         private readonly System.Data.IDbCommand m_insertmetadatasetCommand;
 
@@ -111,11 +112,11 @@ namespace Duplicati.Library.Main.Database
             m_findfilesetCommand = m_connection.CreateCommand();
             m_insertblocksetentryCommand = m_connection.CreateCommand();
             m_insertblocklistHashesCommand = m_connection.CreateCommand();
-            m_selectblocklistHashesCommand = m_connection.CreateCommand();
             m_insertfileOperationCommand = m_connection.CreateCommand();
             m_selectfileSimpleCommand = m_connection.CreateCommand();
             m_selectfileHashCommand = m_connection.CreateCommand();
             m_insertblocksetentryFastCommand = m_connection.CreateCommand();
+            m_insertblocklistHashesFastCommand = m_connection.CreateCommand();
 				
 			m_findblockCommand.CommandText = @"SELECT ""ID"" FROM ""Block"" WHERE ""Hash"" = ? AND ""Size"" = ?";
             m_findblockCommand.AddParameters(2);
@@ -147,8 +148,11 @@ namespace Duplicati.Library.Main.Database
             m_insertblocksetentryCommand.CommandText = @"INSERT INTO ""BlocksetEntry"" (""BlocksetID"", ""Index"", ""BlockID"") SELECT ? AS A, ? AS B, ""ID"" FROM ""Block"" WHERE ""Hash"" = ? AND ""Size"" = ?";
             m_insertblocksetentryCommand.AddParameters(4);
 
-            m_insertblocklistHashesCommand.CommandText = @"INSERT INTO ""BlocklistHash"" (""BlocksetID"", ""Index"", ""BlockID"") SELECT ? AS A, ? AS B, ""ID"" FROM ""Block"" WHERE ""Hash"" = ? AND ""Size"" = ? ";
+            m_insertblocklistHashesCommand.CommandText = @"INSERT INTO ""BlocklistEntry"" (""BlocksetID"", ""Index"", ""BlockID"") SELECT ? AS A, ? AS B, ""ID"" FROM ""Block"" WHERE ""Hash"" = ? AND ""Size"" = ? ";
             m_insertblocklistHashesCommand.AddParameters(4);
+
+            m_insertblocklistHashesFastCommand.CommandText = @"INSERT INTO ""BlocklistEntry"" (""BlocksetID"", ""Index"", ""BlockID"") VALUES (?,?,?)";
+            m_insertblocklistHashesFastCommand.AddParameters(3);
 
             m_insertmetadatasetCommand.CommandText = @"INSERT INTO ""MetadataBlockset"" (""BlocksetID"") VALUES (?); SELECT last_insert_rowid();";
             m_insertmetadatasetCommand.AddParameter();
@@ -161,8 +165,6 @@ namespace Duplicati.Library.Main.Database
             m_selectfileHashCommand.CommandText = @"SELECT ""Blockset"".""Fullhash"" FROM ""Blockset"", ""File"" WHERE ""Blockset"".""ID"" = ""File"".""BlocksetID"" AND ""File"".""ID"" = ?  ";
             m_selectfileHashCommand.AddParameters(1);
 
-            m_selectblocklistHashesCommand.CommandText = @"SELECT ""Hash"" FROM ""BlocklistHash"" WHERE ""BlocksetID"" = ? ORDER BY ""Index"" ASC ";
-            m_selectblocklistHashesCommand.AddParameters(1);
         }
         
         /// <summary>
@@ -390,9 +392,12 @@ namespace Duplicati.Library.Main.Database
 
                     m_insertblocklistHashesCommand.SetParameterValue(0, blocksetid);
                     m_insertblocklistHashesCommand.Transaction = tr.Parent;
+                    m_insertblocklistHashesFastCommand.SetParameterValue(0, blocksetid);
+                    m_insertblocklistHashesFastCommand.Transaction = tr.Parent;
 
                     foreach (var bh in blocklistHashes)
                     {
+                        //TODO: Use Lookup m_blockHashLookup
                         long blcnt = Math.Min(remainingblockscount, hashesperblock);
                         remainingblockscount -= blcnt;
                         m_insertblocklistHashesCommand.SetParameterValue(1, ix);
@@ -659,6 +664,8 @@ namespace Duplicati.Library.Main.Database
             m_metadataLookup = null;
             m_blockHashLookup = null;
             m_pathLookup = null;
+
+            //TODO: Dispose DbCommands
 
             base.Dispose();
         }

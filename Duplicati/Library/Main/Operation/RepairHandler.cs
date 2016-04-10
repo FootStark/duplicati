@@ -275,7 +275,7 @@ namespace Duplicati.Library.Main.Operation
                                 var w = new FilesetVolumeWriter(m_options, DateTime.UtcNow);
                                 newEntry = w;
                                 w.SetRemoteFilename(n.Name);
-								
+
                                 db.WriteFileset(w, null, filesetId);
 	
                                 w.Close();

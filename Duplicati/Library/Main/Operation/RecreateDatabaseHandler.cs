@@ -375,7 +375,7 @@ namespace Duplicati.Library.Main.Operation
                     for(var i = 0; i < 3; i++)
                     {
                         // Grab the list matching the pass type
-                        var lst = restoredb.GetMissingBlockListVolumes(i).ToList();
+                        var lst = restoredb.GetMissingBlockListVolumes(i, m_options.Blocksize / hashsize).ToList();
                         if (lst.Count > 0)
                         {
                             switch (i)
@@ -425,8 +425,11 @@ namespace Duplicati.Library.Main.Operation
                                     restoredb.UpdateOrRegisterBlock(h.Key, h.Value, volumeid, tr);
                             
                                 // Grab all known blocklists from the volume
-                                foreach(var blocklisthash in restoredb.GetBlockLists(volumeid))
+                                foreach (var blocklisthash in restoredb.GetBlockLists(volumeid))
+                                {
+                                    //! Check where BlockSet is recorded in DB: var blid = restoredb.UpdateOrRegisterBlock(blocklisthash, h.Value, volumeid, tr);
                                     restoredb.UpdateBlockset(blocklisthash, rd.ReadBlocklist(blocklisthash, hashsize), tr);
+                                }
     
                                 // Update tables so we know if we are done
                                 restoredb.FindMissingBlocklistHashes(hashsize, m_options.Blocksize, tr);

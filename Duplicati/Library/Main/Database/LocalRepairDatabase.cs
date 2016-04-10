@@ -192,7 +192,7 @@ namespace Duplicati.Library.Main.Database
             public IEnumerable<IRemoteVolume> GetFilesetsUsingMissingBlocks()
             {
                 var blocks = @"SELECT DISTINCT ""File"".""ID"" AS ID FROM ""{0}"", ""Block"", ""Blockset"", ""BlocksetEntry"", ""File"" WHERE ""Block"".""Hash"" = ""{0}"".""Hash"" AND ""Block"".""Size"" = ""{0}"".""Size"" AND ""BlocksetEntry"".""BlockID"" = ""Block"".""ID"" AND ""BlocksetEntry"".""BlocksetID"" = ""Blockset"".""ID"" AND ""File"".""BlocksetID"" = ""Blockset"".""ID"" ";
-                var blocklists = @"SELECT DISTINCT ""File"".""ID"" AS ID FROM ""{0}"", ""Block"", ""Blockset"", ""BlocklistHash"", ""File"" WHERE ""Block"".""Hash"" = ""{0}"".""Hash"" AND ""Block"".""Size"" = ""{0}"".""Size"" AND ""BlocklistHash"".""Hash"" = ""Block"".""Hash"" AND ""BlocklistHash"".""BlocksetID"" = ""Blockset"".""ID"" AND ""File"".""BlocksetID"" = ""Blockset"".""ID"" ";
+                var blocklists = @"SELECT DISTINCT ""File"".""ID"" AS ID FROM ""{0}"", ""Block"", ""Blockset"", ""BlocklistEntry"", ""File"" WHERE ""Block"".""Hash"" = ""{0}"".""Hash"" AND ""Block"".""Size"" = ""{0}"".""Size"" AND ""BlocklistEntry"".""BlockId"" = ""Block"".""ID"" AND ""BlocklistEntry"".""BlocksetID"" = ""Blockset"".""ID"" AND ""File"".""BlocksetID"" = ""Blockset"".""ID"" ";
             
                 var cmdtxt = @"SELECT DISTINCT ""RemoteVolume"".""Name"", ""RemoteVolume"".""Hash"", ""RemoteVolume"".""Size"" FROM ""RemoteVolume"", ""FilesetEntry"", ""Fileset"" WHERE ""RemoteVolume"".""ID"" = ""Fileset"".""VolumeID"" AND ""Fileset"".""ID"" = ""FilesetEntry"".""FilesetID"" AND ""RemoteVolume"".""Type"" = ? AND ""FilesetEntry"".""FileID"" IN  (SELECT DISTINCT ""ID"" FROM ( " + blocks + " UNION " + blocklists + " ))";
             
@@ -285,7 +285,15 @@ namespace Duplicati.Library.Main.Database
 
             blockhasher.Initialize();
 
-            var sql = string.Format(@"SELECT * FROM (SELECT ""N"".""BlocksetID"", ((""N"".""BlockCount"" + {0} - 1) / {0}) AS ""BlocklistHashCountExpected"", CASE WHEN ""G"".""BlocklistHashCount"" IS NULL THEN 0 ELSE ""G"".""BlocklistHashCount"" END AS ""BlocklistHashCountActual"" FROM (SELECT ""BlocksetID"", COUNT(*) AS ""BlockCount"" FROM ""BlocksetEntry"" GROUP BY ""BlocksetID"") ""N"" LEFT OUTER JOIN (SELECT ""BlocksetID"", COUNT(*) AS ""BlocklistHashCount"" FROM ""BlocklistHash"" GROUP BY ""BlocksetID"") ""G"" ON ""N"".""BlocksetID"" = ""G"".""BlocksetID"" WHERE ""N"".""BlockCount"" > 1) WHERE ""BlocklistHashCountExpected"" != ""BlocklistHashCountActual""", blocksize / hashsize);
+            var sql = string.Format(
+                @"SELECT * " +
+                @"   FROM (SELECT ""N"".""BlocksetID"", ((""N"".""BlockCount"" + {0} - 1) / {0}) AS ""BlocklistHashCountExpected"", " +
+                @"                CASE WHEN ""G"".""BlocklistHashCount"" IS NULL THEN 0 ELSE ""G"".""BlocklistHashCount"" END AS ""BlocklistHashCountActual"" " +
+                @"           FROM (SELECT ""BlocksetID"", COUNT(*) AS ""BlockCount"" FROM ""BlocksetEntry"" GROUP BY ""BlocksetID"") ""N"" " +
+                @"                LEFT OUTER JOIN (SELECT ""BlocksetID"", COUNT(*) AS ""BlocklistHashCount"" FROM ""BlocklistEntry"" GROUP BY ""BlocksetID"") ""G"" " +
+                @"                  ON ""N"".""BlocksetID"" = ""G"".""BlocksetID"" " +
+                @"          WHERE ""N"".""BlockCount"" > 1) " +
+                @"  WHERE ""BlocklistHashCountExpected"" != ""BlocklistHashCountActual"" ", blocksize / hashsize);
             var countsql = @"SELECT COUNT(*) FROM (" + sql + @")";
 
             using(var tr = m_connection.BeginTransaction())
@@ -294,24 +302,24 @@ namespace Duplicati.Library.Main.Database
                 var itemswithnoblocklisthash = cmd.ExecuteScalarInt64(countsql, 0);
                 if (itemswithnoblocklisthash != 0)
                 {
-                    m_result.AddMessage(string.Format("Found {0} missing blocklisthash entries, repairing", itemswithnoblocklisthash));
+                    m_result.AddMessage(string.Format("Found {0} missing blocklist entries, repairing", itemswithnoblocklisthash));
                     using(var c2 = m_connection.CreateCommand(tr))
                     using(var c3 = m_connection.CreateCommand(tr))
                     using(var c4 = m_connection.CreateCommand(tr))
                     using(var c5 = m_connection.CreateCommand(tr))
                     using(var c6 = m_connection.CreateCommand(tr))
                     {
-                        c3.CommandText = @"INSERT INTO ""BlocklistHash"" (""BlocksetID"", ""Index"", ""Hash"") VALUES (?, ?, ?) ";
-                        c4.CommandText = @"SELECT COUNT(*) FROM ""Block"" WHERE ""Hash"" = ? AND ""Size"" = ?";
+                        c3.CommandText = @"INSERT INTO ""BlocklistEntry"" (""BlocksetID"", ""Index"", ""BlockId"") VALUES (?, ?, ?) ";
+                        c4.CommandText = @"SELECT ""ID"" FROM ""Block"" WHERE ""Hash"" = ? AND ""Size"" = ?";
                         c5.CommandText = @"SELECT ""ID"" FROM ""DeletedBlock"" WHERE ""Hash"" = ? AND ""Size"" = ? AND ""VolumeID"" IN (SELECT ""ID"" FROM ""RemoteVolume"" WHERE ""Type"" = ? AND (""State"" = ? OR ""State"" = ?))";
-                        c6.CommandText = @"INSERT INTO ""Block"" (""Hash"", ""Size"", ""VolumeID"") SELECT ""Hash"", ""Size"", ""VolumeID"" FROM ""DeletedBlock"" WHERE ""ID"" = ? LIMIT 1; DELETE FROM ""DeletedBlock"" WHERE ""ID"" = ?;";
+                        c6.CommandText = @"INSERT INTO ""Block"" (""Hash"", ""Size"", ""VolumeID"") SELECT ""Hash"", ""Size"", ""VolumeID"" FROM ""DeletedBlock"" WHERE ""ID"" = ?; DELETE FROM ""DeletedBlock"" WHERE ""ID"" = ?;";
 
                         foreach(var e in cmd.ExecuteReaderEnumerable(sql))
                         {
                             var blocksetid = e.ConvertValueToInt64(0);
                             var ix = 0L;
 
-                            c2.ExecuteNonQuery(@"DELETE FROM ""BlocklistHash"" WHERE ""BlocksetID"" = ?", blocksetid);
+                            c2.ExecuteNonQuery(@"DELETE FROM ""BlocklistEntry"" WHERE ""BlocksetID"" = ?", blocksetid);
 
                             foreach(var h in c2.ExecuteReaderEnumerable(@"SELECT ""A"".""Hash"" FROM ""Block"" ""A"", ""BlocksetEntry"" ""B"" WHERE ""A"".""ID"" = ""B"".""BlockID"" AND ""B"".""BlocksetID"" = ? ORDER BY ""B"".""Index""", blocksetid))
                             {
@@ -321,21 +329,24 @@ namespace Duplicati.Library.Main.Database
                                     var blkey = Convert.ToBase64String(blockhasher.ComputeHash(blocklistbuffer, 0, blocklistoffset));
 
                                     // Ensure that the block exists in "blocks"
-                                    if (c4.ExecuteScalarInt64(null, -1, blkey, blocklistoffset) != 1)
+                                    long blocklistBlockId = -1;
+                                    if ((blocklistBlockId = c4.ExecuteScalarInt64(null, -1, blkey, blocklistoffset)) < 0)
                                     {
-                                        var c = c5.ExecuteScalarInt64(null, -1, blkey, blocklistoffset, RemoteVolumeType.Blocks.ToString(), RemoteVolumeState.Uploaded.ToString(), RemoteVolumeState.Verified.ToString());
-                                        if (c <= 0)
+                                        blocklistBlockId = c5.ExecuteScalarInt64(null, -1, blkey, blocklistoffset, RemoteVolumeType.Blocks.ToString(), RemoteVolumeState.Uploaded.ToString(), RemoteVolumeState.Verified.ToString());
+                                        if (blocklistBlockId <= 0)
                                             throw new Exception(string.Format("Missing block for blocklisthash: {0}", blkey));
                                         else
                                         {
-                                            var rc = c6.ExecuteNonQuery(null, c, c);
+                                            var rc = c6.ExecuteNonQuery(null, blocklistBlockId, blocklistBlockId);
                                             if (rc != 2)
-                                                throw new Exception(string.Format("Unexpected update count: {0}", rc));
+                                                throw new Exception(string.Format("Unexpected update count (2 expected): {0}", rc));
+                                            // requery blockid
+                                            blocklistBlockId = c4.ExecuteScalarInt64(null, -1, blkey, blocklistoffset);
                                         }
                                     }
 
                                     // Add to table
-                                    c3.ExecuteNonQuery(null, blocksetid, ix, blkey);
+                                    c3.ExecuteNonQuery(null, blocksetid, ix, blocklistBlockId);
                                     ix++;
                                     blocklistoffset = 0;
                                 }
@@ -347,24 +358,27 @@ namespace Duplicati.Library.Main.Database
 
                             if (blocklistoffset != 0)
                             {
-                                var blkeyfinal = Convert.ToBase64String(blockhasher.ComputeHash(blocklistbuffer, 0, blocklistoffset));
+                                var blkey = Convert.ToBase64String(blockhasher.ComputeHash(blocklistbuffer, 0, blocklistoffset));
 
                                 // Ensure that the block exists in "blocks"
-                                if (c4.ExecuteScalarInt64(null, -1, blkeyfinal, blocklistoffset) != 1)
+                                long blocklistBlockId = -1;
+                                if ((blocklistBlockId = c4.ExecuteScalarInt64(null, -1, blkey, blocklistoffset)) < 0)
                                 {
-                                    var c = c5.ExecuteScalarInt64(null, -1, blkeyfinal, blocklistoffset, RemoteVolumeType.Blocks.ToString(), RemoteVolumeState.Uploaded.ToString(), RemoteVolumeState.Verified.ToString());
-                                    if (c == 0)
-                                        throw new Exception(string.Format("Missing block for blocklisthash: {0}", blkeyfinal));
+                                    blocklistBlockId = c5.ExecuteScalarInt64(null, -1, blkey, blocklistoffset, RemoteVolumeType.Blocks.ToString(), RemoteVolumeState.Uploaded.ToString(), RemoteVolumeState.Verified.ToString());
+                                    if (blocklistBlockId <= 0)
+                                        throw new Exception(string.Format("Missing block for blocklisthash: {0}", blkey));
                                     else
                                     {
-                                        var rc = c6.ExecuteNonQuery(null, c, c);
+                                        var rc = c6.ExecuteNonQuery(null, blocklistBlockId, blocklistBlockId);
                                         if (rc != 2)
-                                            throw new Exception(string.Format("Unexpected update count: {0}", rc));
+                                            throw new Exception(string.Format("Unexpected update count (2 expected): {0}", rc));
+                                        // requery blockid
+                                        blocklistBlockId = c4.ExecuteScalarInt64(null, -1, blkey, blocklistoffset);
                                     }
                                 }
 
                                 // Add to table
-                                c3.ExecuteNonQuery(null, blocksetid, ix, blkeyfinal);
+                                c3.ExecuteNonQuery(null, blocksetid, ix, blocklistBlockId);
                                 ix++;
                             }
                         }
@@ -382,57 +396,11 @@ namespace Duplicati.Library.Main.Database
 
         }
 
+        [Obsolete("With new design, this actually can't happen anymore ([BlocksetID, Index] is PRIMARY KEY). Remove calls.")]
         public void FixDuplicateBlocklistHashes(long blocksize, long hashsize)
         {
-            using(var tr = m_connection.BeginTransaction())
-            using(var cmd = m_connection.CreateCommand(tr))
-            {
-                var dup_sql = @"SELECT * FROM (SELECT ""BlocksetID"", ""Index"", COUNT(*) AS ""EC"" FROM ""BlocklistHash"" GROUP BY ""BlocksetID"", ""Index"") WHERE ""EC"" > 1";
-
-                var sql_count = @"SELECT COUNT(*) FROM (" + dup_sql + ")";
-
-                var x = cmd.ExecuteScalarInt64(sql_count, 0);
-                if (x > 0)
-                {
-                    m_result.AddMessage("Found duplicate blocklisthash entries, repairing");
-
-                    var unique_count = cmd.ExecuteScalarInt64(@"SELECT COUNT(*) FROM (SELECT DISTINCT ""BlocksetID"", ""Index"" FROM ""BlocklistHash"")", 0);
-
-                    using(var c2 = m_connection.CreateCommand(tr))
-                    {
-                        c2.CommandText = @"DELETE FROM ""BlocklistHash"" WHERE rowid IN (SELECT rowid FROM ""BlocklistHash"" WHERE ""BlocksetID"" = ? AND ""Index"" = ? LIMIT ?)";
-                        foreach(var rd in cmd.ExecuteReaderEnumerable(dup_sql))
-                        {
-                            var expected = rd.GetInt32(2) - 1;
-                            var actual = c2.ExecuteNonQuery(null, rd.GetValue(0), rd.GetValue(1), expected);
-                            if (actual != expected)
-                                throw new Exception(string.Format("Unexpected number of results after fix, got: {0}, expected: {1}", actual, expected));
-                        }
-                    }
-
-                    cmd.CommandText = sql_count;
-                    x = cmd.ExecuteScalarInt64();
-                    if (x > 1)
-                        throw new Exception("Repair failed, there are still duplicate file entries!");
-
-                    var real_count = cmd.ExecuteScalarInt64(@"SELECT Count(*) FROM ""BlocklistHash""", 0);
-
-                    if (real_count != unique_count)
-                        throw new Exception(string.Format("Failed to repair, result should have been {0} blocklist hashes, but result was {1} blocklist hashes", unique_count, real_count));
-
-                    try
-                    {
-                        VerifyConsistency(tr, blocksize, hashsize);
-                    }
-                    catch(Exception ex)
-                    {
-                        throw new Exception("Repaired blocklisthashes, but the database was broken afterwards, rolled back changes", ex);
-                    }
-
-                    m_result.AddMessage("Duplicate blocklisthashes repaired succesfully");
-                    tr.Commit();
-                }
-            }
+            // With new design, this actually can't happen anymore ([BlocksetID, Index] is PRIMARY KEY). Remove calls.
+            return;
         }
 
         public void CheckAllBlocksAreInVolume(string filename, IEnumerable<KeyValuePair<string, long>> blocks)
@@ -481,26 +449,20 @@ FROM
             ""Z"".""Size"" AS ""BlocklistSize"",
             ""Z"".""ID"" AS ""BlocklistHashBlockID"" 
         FROM 
-            ""BlocklistHash"" Y,
+            ""BlocklistEntry"" Y,
             ""Block"" Z 
         WHERE 
-            ""Y"".""Hash"" = ""Z"".""Hash"" AND ""Y"".""Hash"" = ? AND ""Z"".""Size"" = ?
+            ""Y"".""BlockId"" = ""Z"".""ID"" AND ""Z"".""Hash"" = ? AND ""Z"".""Size"" = ?
         LIMIT 1
     ) B,
     ""Block"" C
-WHERE 
-    ""A"".""BlocksetID"" = ""B"".""BlocksetID"" 
-    AND 
-    ""A"".""BlockID"" = ""C"".""ID""
-    AND
-    ""A"".""Index"" >= ""B"".""BlocklistHashIndex"" * ({0} / {1})
-    AND
-    ""A"".""Index"" < (""B"".""BlocklistHashIndex"" + 1) * ({0} / {1})
+WHERE ""A"".""BlocksetID"" = ""B"".""BlocksetID"" 
+  AND ""A"".""BlockID"" = ""C"".""ID""
+  AND ""A"".""Index"" BETWEEN (""B"".""BlocklistHashIndex"" * {0}) AND ((""B"".""BlocklistHashIndex"" + 1) * {0} - 1)
 ORDER BY 
     ""A"".""Index""
-
 "
-                ,blocksize, blockhashlength);
+                , blocksize / blockhashlength);
 
                 var en = blocklist.GetEnumerator();
                 foreach(var r in cmd.ExecuteReaderEnumerable(query, hash, length))

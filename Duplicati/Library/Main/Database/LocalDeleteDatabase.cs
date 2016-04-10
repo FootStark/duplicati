@@ -83,11 +83,17 @@ namespace Duplicati.Library.Main.Database
                 cmd.ExecuteNonQuery(@"DELETE FROM ""MetadataBlockset"" WHERE ""BlocksetID"" NOT IN (SELECT ""MetadataID"" FROM ""File"") ");
                 cmd.ExecuteNonQuery(@"DELETE FROM ""Blockset"" WHERE ""ID"" NOT IN (SELECT ""BlocksetID"" FROM ""File"" UNION ALL SELECT ""BlocksetID"" FROM ""MetadataBlockset"") ");
 				cmd.ExecuteNonQuery(@"DELETE FROM ""BlocksetEntry"" WHERE ""BlocksetID"" NOT IN (SELECT ""ID"" FROM ""Blockset"") ");
-				cmd.ExecuteNonQuery(@"DELETE FROM ""BlocklistHash"" WHERE ""BlocksetID"" NOT IN (SELECT ""ID"" FROM ""Blockset"") ");
+                cmd.ExecuteNonQuery(@"DELETE FROM ""BlocklistEntry"" WHERE ""BlocksetID"" NOT IN (SELECT ""ID"" FROM ""Blockset"") ");
 				
 				//We save the block info for the remote files, before we delete it
-				cmd.ExecuteNonQuery(@"INSERT INTO ""DeletedBlock"" (""Hash"", ""Size"", ""VolumeID"") SELECT ""Hash"", ""Size"", ""VolumeID"" FROM ""Block"" WHERE ""ID"" NOT IN (SELECT DISTINCT ""BlockID"" AS ""BlockID"" FROM ""BlocksetEntry"" UNION SELECT DISTINCT ""ID"" FROM ""Block"", ""BlocklistHash"" WHERE ""Block"".""Hash"" = ""BlocklistHash"".""Hash"") ");
-				cmd.ExecuteNonQuery(@"DELETE FROM ""Block"" WHERE ""ID"" NOT IN (SELECT DISTINCT ""BlockID"" FROM ""BlocksetEntry"" UNION SELECT DISTINCT ""ID"" FROM ""Block"", ""BlocklistHash"" WHERE ""Block"".""Hash"" = ""BlocklistHash"".""Hash"") ");		
+                cmd.ExecuteNonQuery(@"INSERT INTO ""DeletedBlock"" (""Hash"", ""Size"", ""VolumeID"") "
+                                  + @"SELECT ""Hash"", ""Size"", ""VolumeID"" FROM ""Block"" "
+                                  + @" WHERE (NOT EXISTS (SELECT ""BlocksetEntry"".""BlockID"" FROM ""BlocksetEntry"" WHERE ""BlocksetEntry"".""BlockID"" = ""Block"".""ID"" )) "
+                                  + @"    OR (NOT EXISTS (SELECT ""BlocklistEntry"".""BlockID"" FROM ""BlocklistEntry"" WHERE ""BlocklistEntry"".""BlockID"" = ""Block"".""ID"" )) ");
+
+				cmd.ExecuteNonQuery(@"DELETE FROM ""Block"" "
+                                  + @" WHERE (NOT EXISTS (SELECT ""BlocksetEntry"".""BlockID"" FROM ""BlocksetEntry"" WHERE ""BlocksetEntry"".""BlockID"" = ""Block"".""ID"" )) "
+                                  + @"    OR (NOT EXISTS (SELECT ""BlocklistEntry"".""BlockID"" FROM ""BlocklistEntry"" WHERE ""BlocklistEntry"".""BlockID"" = ""Block"".""ID"" )) ");
 	
 				//Find all remote filesets that are no longer required, and mark them as delete
 				var updated = cmd.ExecuteNonQuery(@"UPDATE ""RemoteVolume"" SET ""State"" = ? WHERE ""Type"" = ? AND ""State"" IN (?, ?) AND ""ID"" NOT IN (SELECT ""VolumeID"" FROM ""Fileset"") ", RemoteVolumeState.Deleting.ToString(), RemoteVolumeType.Files.ToString(), RemoteVolumeState.Uploaded.ToString(), RemoteVolumeState.Verified.ToString());

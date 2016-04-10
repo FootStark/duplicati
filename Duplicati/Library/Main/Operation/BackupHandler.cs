@@ -391,8 +391,14 @@ namespace Duplicati.Library.Main.Operation
                     w.FinishVolume(blockvolume.Hash, blockvolume.Size);
 
                     if (m_options.IndexfilePolicy == Options.IndexFileStrategy.Full)
-                        foreach(var b in m_database.GetBlocklists(volumeid, m_options.Blocksize, hashsize))
+                        foreach (var b in m_database.GetBlocklists(volumeid, m_options.Blocksize, hashsize))
+                        {
+                            blockhasher.Initialize();
+                            string verifyBlocklistHash = Convert.ToBase64String(blockhasher.ComputeHash(b.Item2, 0, b.Item3));
+                            if (verifyBlocklistHash != b.Item1)
+                                throw new Exception("Failed to verify blocklist hash on synthetic reconstruction. Please reconstruct db from blockfiles.");
                             w.WriteBlocklist(b.Item1, b.Item2, 0, b.Item3);
+                        }
 
                     w.Close();
 

@@ -91,8 +91,7 @@ namespace Duplicati.Library.Main.Database
             }
             return retVal;
         }
-
-
+        
         public static long ExecuteScalarInt64(this System.Data.IDbCommand self, long defaultvalue = -1)
         {
             return ExecuteScalarInt64(self, null, defaultvalue, null);
@@ -227,6 +226,19 @@ namespace Duplicati.Library.Main.Database
                 }
             }
         }
+
+        public static IEnumerable<T> ReaderEnumerable<T>(this System.Data.IDataReader rd, Func<System.Data.IDataRecord, T> getValue)
+        {
+            while (rd.Read()) 
+            { yield return getValue(rd); }
+        }
+
+        public static IEnumerable<T> ForwardReaderEnumerable<T>(this System.Data.IDataReader rd, Func<System.Data.IDataRecord, T> getValue)
+        {
+            do { yield return getValue(rd); }
+            while (rd.Read());
+        }
+
 
     }
 }

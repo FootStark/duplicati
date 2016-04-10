@@ -400,8 +400,8 @@ namespace Duplicati.Library.Main.Database
                       @"SELECT ""BlocksetEntry"".""BlocksetID"" FROM ""BlocksetEntry"", ""Block"" "
                     + @" WHERE ""BlocksetEntry"".""BlockID"" = ""Block"".""ID"" AND ""Block"".""VolumeID"" IN ({0}) "
                     + @"UNION ALL "
-                    + @"SELECT ""BlocksetID"" FROM ""BlocklistHash"" "
-                    + @"WHERE ""Hash"" IN (SELECT ""Hash"" FROM ""Block"" WHERE ""VolumeID"" IN ({0}))"
+                    + @"SELECT ""BlocklistEntry"".""BlocksetID"" FROM ""BlocklistEntry"", ""Block"" "
+                    + @" WHERE ""BlocklistEntry"".""BlockID"" = ""Block"".""ID"" AND ""Block"".""VolumeID"" IN ({0}) "
                     , volIdsSubQuery);
 
                 // Create a temporary table to cache subquery result, as it might take long (SQLite does not cache at all). 
@@ -414,8 +414,7 @@ namespace Duplicati.Library.Main.Database
                 deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""MetadataBlockset"" WHERE ""BlocksetID"" IN ({0})", bsIdsSubQuery));
                 deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""Blockset"" WHERE ""ID"" IN ({0})", bsIdsSubQuery));
                 deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""BlocksetEntry"" WHERE ""BlocksetID"" IN ({0})", bsIdsSubQuery));
-
-                deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""BlocklistHash"" WHERE ""Hash"" IN (SELECT ""Hash"" FROM ""Block"" WHERE ""VolumeID"" IN ({0}))", volIdsSubQuery));
+                deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""BlocklistEntry"" WHERE ""BlocksetID"" IN ({0})", bsIdsSubQuery));
                 deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""Block"" WHERE ""VolumeID"" IN ({0})", volIdsSubQuery));
                 deletecmd.ExecuteNonQuery(string.Format(@"DELETE FROM ""DeletedBlock"" WHERE ""VolumeID"" IN ({0})", volIdsSubQuery));
 
@@ -745,13 +744,15 @@ namespace Duplicati.Library.Main.Database
 	                    throw new InvalidDataException(sb.ToString());
                 	}
 
-                var real_count = cmd.ExecuteScalarInt64(@"SELECT Count(*) FROM ""BlocklistHash""", 0);
-                var unique_count = cmd.ExecuteScalarInt64(@"SELECT Count(*) FROM (SELECT DISTINCT ""BlocksetID"", ""Index"" FROM ""BlocklistHash"")", 0);
+                //TODO: This is useless now, as there is a primary key ensuring this.
+                //      Get inspiration from BlocksetEntry check above (number of blocks compared to sizes, etc...)
+                var real_count = cmd.ExecuteScalarInt64(@"SELECT Count(*) FROM ""BlocklistEntry""", 0);
+                var unique_count = cmd.ExecuteScalarInt64(@"SELECT Count(*) FROM (SELECT DISTINCT ""BlocksetID"", ""Index"" FROM ""BlocklistEntry"")", 0);
 
                 if (real_count != unique_count)
                     throw new InvalidDataException(string.Format("Found {0} blocklist hashes, but there should be {1}. Run repair to fix it.", real_count, unique_count));
 
-                var itemswithnoblocklisthash = cmd.ExecuteScalarInt64(string.Format(@"SELECT COUNT(*) FROM (SELECT * FROM (SELECT ""N"".""BlocksetID"", ((""N"".""BlockCount"" + {0} - 1) / {0}) AS ""BlocklistHashCountExpected"", CASE WHEN ""G"".""BlocklistHashCount"" IS NULL THEN 0 ELSE ""G"".""BlocklistHashCount"" END AS ""BlocklistHashCountActual"" FROM (SELECT ""BlocksetID"", COUNT(*) AS ""BlockCount"" FROM ""BlocksetEntry"" GROUP BY ""BlocksetID"") ""N"" LEFT OUTER JOIN (SELECT ""BlocksetID"", COUNT(*) AS ""BlocklistHashCount"" FROM ""BlocklistHash"" GROUP BY ""BlocksetID"") ""G"" ON ""N"".""BlocksetID"" = ""G"".""BlocksetID"" WHERE ""N"".""BlockCount"" > 1) WHERE ""BlocklistHashCountExpected"" != ""BlocklistHashCountActual"")", blocksize / hashsize), 0);
+                var itemswithnoblocklisthash = cmd.ExecuteScalarInt64(string.Format(@"SELECT COUNT(*) FROM (SELECT * FROM (SELECT ""N"".""BlocksetID"", ((""N"".""BlockCount"" + {0} - 1) / {0}) AS ""BlocklistHashCountExpected"", CASE WHEN ""G"".""BlocklistHashCount"" IS NULL THEN 0 ELSE ""G"".""BlocklistHashCount"" END AS ""BlocklistHashCountActual"" FROM (SELECT ""BlocksetID"", COUNT(*) AS ""BlockCount"" FROM ""BlocksetEntry"" GROUP BY ""BlocksetID"") ""N"" LEFT OUTER JOIN (SELECT ""BlocksetID"", COUNT(*) AS ""BlocklistHashCount"" FROM ""BlocklistEntry"" GROUP BY ""BlocksetID"") ""G"" ON ""N"".""BlocksetID"" = ""G"".""BlocksetID"" WHERE ""N"".""BlockCount"" > 1) WHERE ""BlocklistHashCountExpected"" != ""BlocklistHashCountActual"")", blocksize / hashsize), 0);
                 if (itemswithnoblocklisthash != 0)
                     throw new InvalidDataException(string.Format("Found {0} file(s) with missing blocklist hashes", itemswithnoblocklisthash));
 
@@ -875,6 +876,7 @@ namespace Duplicati.Library.Main.Database
             }
         }
 
+
         public void WriteFileset(Volumes.FilesetVolumeWriter filesetvolume, System.Data.IDbTransaction transaction, long filesetId)
         {
             using (var cmd = m_connection.CreateCommand())
@@ -903,6 +905,7 @@ namespace Duplicati.Library.Main.Database
                 }
 
                 using (var cmdLookupBlockHash = m_connection.CreateCommand())
+                using (var cmdLookupBlockListHashes = m_connection.CreateCommand())
                 {
                     cmdLookupBlockHash.Transaction = transaction;
                     cmdLookupBlockHash.CommandText = @"SELECT ""Block"".""Hash"" "
@@ -910,34 +913,52 @@ namespace Duplicati.Library.Main.Database
                                                    + @" WHERE ""BlocksetEntry"".""BlocksetID"" = ? AND ""Block"".""Size"" = ? ";
                     cmdLookupBlockHash.AddParameters(2);
 
-                    cmd.CommandText = @"SELECT ""F"".""Path"", ""F"".""Lastmodified"", ""F"".""Filelength"", ""F"".""Filehash"", ""F"".""Metahash"", ""F"".""Metalength"", ""G"".""Hash"", ""F"".""BlocksetID"""
-                                    + @"  FROM (SELECT ""A"".""Path"" AS ""Path"", ""D"".""Lastmodified"" AS ""Lastmodified"", ""B"".""Length"" AS ""Filelength"", "
-                                    + @"               ""B"".""FullHash"" AS ""Filehash"", ""E"".""FullHash"" AS ""Metahash"", ""E"".""Length"" AS ""Metalength"", ""A"".""BlocksetID"" AS ""BlocksetID"" "
-                                    + @"          FROM ""File"" A, ""Blockset"" B, ""MetadataBlockset"" C, ""FilesetEntry"" D, ""Blockset"" E "
-                                    + @"         WHERE ""A"".""ID"" = ""D"".""FileID"" AND ""D"".""FilesetID"" = ? AND ""A"".""BlocksetID"" = ""B"".""ID"" "
-                                    + @"           AND ""A"".""MetadataID"" = ""C"".""BlocksetID"" AND ""E"".""ID"" = ""C"".""BlocksetID"" "
-                                    + @"       ) F LEFT OUTER JOIN ""BlocklistHash"" G ON ""G"".""BlocksetID"" = ""F"".""BlocksetID"" ORDER BY ""F"".""Path"", ""G"".""Index"" ";
+                    cmdLookupBlockListHashes.Transaction = transaction;
+                    cmdLookupBlockListHashes.CommandText = @"SELECT ""Block"".""Hash"" " // ""BlocklistEntry"".""Index"", 
+                                                         + @"  FROM ""BlocklistEntry"" INNER JOIN ""Block"" ON ""Block"".""ID"" = ""BlocksetEntry"".""BlockID"" "
+                                                         + @" WHERE ""BlocklistEntry"".""BlocksetID"" = ? "
+                                                         + @" ORDER BY ""BlocklistEntry"".""Index"" ";
+                    cmdLookupBlockListHashes.AddParameters(1);
+
+                    //cmd.CommandText = @"SELECT ""F"".""Path"", ""F"".""Lastmodified"", ""F"".""Filelength"", ""F"".""Filehash"", ""F"".""Metahash"", ""F"".""Metalength"", ""G"".""Hash"", ""F"".""BlocksetID"""
+                    //                + @"  FROM (SELECT ""A"".""Path"" AS ""Path"", ""D"".""Lastmodified"" AS ""Lastmodified"", ""B"".""Length"" AS ""Filelength"", "
+                    //                + @"               ""B"".""FullHash"" AS ""Filehash"", ""E"".""FullHash"" AS ""Metahash"", ""E"".""Length"" AS ""Metalength"", ""A"".""BlocksetID"" AS ""BlocksetID"" "
+                    //                + @"          FROM ""File"" A, ""Blockset"" B, ""MetadataBlockset"" C, ""FilesetEntry"" D, ""Blockset"" E "
+                    //                + @"         WHERE ""A"".""ID"" = ""D"".""FileID"" AND ""D"".""FilesetID"" = ? AND ""A"".""BlocksetID"" = ""B"".""ID"" "
+                    //                + @"           AND ""A"".""MetadataID"" = ""C"".""BlocksetID"" AND ""E"".""ID"" = ""C"".""BlocksetID"" "
+                    //                + @"       ) F LEFT OUTER JOIN (SELECT ""BlocklistEntry"".""Index"", ""Block"".""Hash"" "
+                    //                + @"                              FROM ""BlocklistEntry"" INNER JOIN ""Block"" ON ""Block"".""ID"" = ""BlocksetEntry"".""BlockID"" "
+                    //                + @"                             WHERE ""BlocklistEntry"".""BlocksetID"" = ""F"".""BlocksetID"" "
+                    //                + @"                           ) G ON 1 = 1 ORDER BY ""F"".""Path"", ""G"".""Index"" "; // Not sure if SQLite supports that kind of dependent join subquery
+                    //// + @"                           ) G ON ""G"".""BlocksetID"" = ""F"".""BlocksetID"" ORDER BY ""F"".""Path"", ""G"".""Index"" ";
+
+
+                    cmd.CommandText = @"SELECT ""A"".""Path"" AS ""Path"", ""D"".""Lastmodified"" AS ""Lastmodified"", ""B"".""Length"" AS ""Filelength"", "
+                                    + @"       ""B"".""FullHash"" AS ""Filehash"", ""E"".""FullHash"" AS ""Metahash"", ""E"".""Length"" AS ""Metalength"", ""A"".""BlocksetID"" AS ""BlocksetID"" "
+                                    + @"  FROM ""File"" A, ""Blockset"" B, ""MetadataBlockset"" C, ""FilesetEntry"" D, ""Blockset"" E "
+                                    + @" WHERE ""A"".""ID"" = ""D"".""FileID"" AND ""D"".""FilesetID"" = ? AND ""A"".""BlocksetID"" = ""B"".""ID"" "
+                                    + @"   AND ""A"".""MetadataID"" = ""C"".""BlocksetID"" AND ""E"".""ID"" = ""C"".""BlocksetID"" "
+                                    + @" ORDER BY ""A"".""Path"" "; // Hopefully SQLite let's us execute another query (Blockhash lookup) while the reader is active...
+
                     cmd.Parameters.Clear();
                     cmd.AddParameter(filesetId);
 
                     using (var rd = cmd.ExecuteReader())
-                        if (rd.Read())
+                        while (rd.Read())
                         {
-                            var more = false;
-                            do
-                            {
-                                var path = rd.GetValue(0).ToString();
-                                var filehash = rd.GetValue(3).ToString();
-                                var size = rd.ConvertValueToInt64(2);
-                                var lastmodified = new DateTime(rd.ConvertValueToInt64(1, 0), DateTimeKind.Utc);
-                                var metahash = rd.GetValue(4).ToString();
-                                var metasize = rd.ConvertValueToInt64(5, -1);
-                                var blocksetId = rd.ConvertValueToInt64(7);
-                                var p = rd.GetValue(6);
-                                bool isSingleBlockFile = (p == null || p == DBNull.Value);
+                            var path = rd.GetValue(0).ToString();
+                            var filehash = rd.GetValue(3).ToString();
+                            var size = rd.ConvertValueToInt64(2);
+                            var lastmodified = new DateTime(rd.ConvertValueToInt64(1, 0), DateTimeKind.Utc);
+                            var metahash = rd.GetValue(4).ToString();
+                            var metasize = rd.ConvertValueToInt64(5, -1);
+                            var blocksetId = rd.ConvertValueToInt64(6);
 
-                                var blrd = isSingleBlockFile ? null : new BlocklistHashEnumerable(rd);
-                                IEnumerable<string> blenum = blrd; 
+                            cmdLookupBlockListHashes.SetParameterValue(0, blocksetId);
+                            using (var blrd = cmdLookupBlockListHashes.ExecuteReader())
+                            {
+                                bool isSingleBlockFile = !blrd.Read();
+                                IEnumerable<string> blenum = null;
 
                                 // we will write out the hash of a single block file as a blocklist hash if forced to.
                                 // This is used if the blockhashalgo is not equal to the filehashalgo.
@@ -951,14 +972,11 @@ namespace Duplicati.Library.Main.Database
                                         throw new Exception(String.Format("Single block hash not found in db for file '{0}'.", path));
                                     blenum = Enumerable.Repeat(singleBlockHash, 1);
                                 }
+                                else if (!isSingleBlockFile)
+                                    blenum = blrd.ForwardReaderEnumerable(r => r.GetString(0));
 
                                 filesetvolume.AddFile(path, filehash, size, lastmodified, metahash, metasize, blenum);
-                                if (blrd == null)
-                                    more = rd.Read();
-                                else
-                                    more = blrd.MoreData;
-
-                            } while (more);
+                            }
                         }
                 }
             }
@@ -1107,40 +1125,74 @@ namespace Duplicati.Library.Main.Database
 
         public IEnumerable<Tuple<string, byte[], int>> GetBlocklists(long volumeid, long blocksize, int hashsize)
         {
-            using(var cmd = m_connection.CreateCommand())
+            using (var cmd = m_connection.CreateCommand())
             {
-                var sql = string.Format(@"SELECT ""A"".""Hash"", ""C"".""Hash"" FROM " + 
-                    @"(SELECT ""BlocklistHash"".""BlocksetID"", ""Block"".""Hash"", * FROM  ""BlocklistHash"",""Block"" WHERE  ""BlocklistHash"".""Hash"" = ""Block"".""Hash"" AND ""Block"".""VolumeID"" = ?) A, " + 
-                    @" ""BlocksetEntry"" B, ""Block"" C WHERE ""B"".""BlocksetID"" = ""A"".""BlocksetID"" AND " + 
-                    @" ""B"".""Index"" >= (""A"".""Index"" * {0}) AND ""B"".""Index"" < ((""A"".""Index"" + 1) * {0}) AND ""C"".""ID"" = ""B"".""BlockID"" " + 
-                    @" ORDER BY ""A"".""BlocksetID"", ""B"".""Index""",
+                var sql = string.Format(
+                    @"SELECT ""A"".""BlocklistBlockHash"", ""A"".""BlocklistBlockSize"", (""B"".""Index"" - (""A"".""BlocklistIndex"" * {0})) AS ""IndexInBlocklistBlock"", ""B"".""BlocksetID"",  ""C"".""Hash"" as ""BlockHash""" +
+                    @"  FROM (SELECT ""BlocklistEntry"".""BlocksetID"", ""BlocklistEntry"".""Index"" AS ""BlocklistIndex"", ""Block"".""Hash"" AS ""BlocklistBlockHash"", ""Block"".""Size"" AS ""BlocklistBlockSize"" " +
+                    @"          FROM ""BlocklistEntry"",""Block"" WHERE  ""BlocklistEntry"".""BlockID"" = ""Block"".""ID"" AND ""Block"".""VolumeID"" = ?) " +
+                    @"       ) A, ""BlocksetEntry"" B, ""Block"" C " +
+                    @" WHERE ""B"".""BlocksetID"" = ""A"".""BlocksetID"" " +
+                    @"   AND ""B"".""Index"" BETWEEN (""A"".""BlocklistIndex"" * {0}) AND ((""A"".""BlocklistIndex"" + 1) * {0} - 1) " +
+                    @"   AND ""C"".""ID"" = ""B"".""BlockID"" " +
+                    @" ORDER BY ""A"".""BlocklistBlockHash"", ""A"".""BlocklistBlockSize"", ""IndexInBlocklistBlock"", ""B"".""BlocksetID"" ",
                     blocksize / hashsize
                 );
 
-                string curHash = null;
-                int index = 0;
+                string activeBlocklistHash = null;
+                long activeBlocklistExpectedSize = 0;
+                int lastIndex = -1;
+                string lastBlockhash = null;
                 byte[] buffer = new byte[blocksize];
 
-                using(var rd = cmd.ExecuteReader(sql, volumeid))
+                using (var rd = cmd.ExecuteReader(sql, volumeid))
                     while (rd.Read())
                     {
-                        var blockhash = rd.GetValue(0).ToString();
-                        if ((blockhash != curHash && curHash != null) || index + hashsize > buffer.Length)
+                        var blocklisthash = rd.GetValue(0).ToString();
+                        var blocklistsize = rd.ConvertValueToInt64(1);
+                        var indexInBlockList = (int)rd.ConvertValueToInt64(2);
+                        var fromblocksetId = rd.ConvertValueToInt64(3);
+                        var blockhash = rd.GetValue(4).ToString();
+
+                        bool isNewBlocklistBlock = (blocklisthash != activeBlocklistHash && activeBlocklistHash != null);
+                        bool isSameBlock = !isNewBlocklistBlock && (indexInBlockList == lastIndex);
+
+                        // As there were some mistakes here that could seriously mess up the reconstructed index files,
+                        // we introduce some consistency checks that would fail before uploading incorrect blocklists.
+                        if (isSameBlock && (blockhash != lastBlockhash))
+                            throw new Exception("Something went wrong during reconstruction of blocklists: Mismatching block hashes. Either the database is corrupt or the internal queries are erroneous.");
+                        if (!isNewBlocklistBlock && !isSameBlock && (indexInBlockList != (lastIndex + 1)))
+                            throw new Exception("Something went wrong during reconstruction of blocklists: A block is missing. Either the database is corrupt or the internal queries are erroneous.");
+                        if ((indexInBlockList + 1) * hashsize > buffer.Length)
+                            throw new Exception("Something went wrong during reconstruction of blocklists: Blocklist too large. Either the database is corrupt or the internal queries are erroneous.");
+
+                        if (isSameBlock) continue;
+
+                        if (isNewBlocklistBlock)
                         {
-                            yield return new Tuple<string, byte[], int>(curHash, buffer, index);
-                            curHash = null;
-                            index = 0;
+                            int finalblocklistsize = ((lastIndex + 1) * hashsize);
+                            if (activeBlocklistExpectedSize != finalblocklistsize)
+                                throw new Exception("Something went wrong during reconstruction of blocklists: Blocklist size does not match expectation. Either the database is corrupt or the internal queries are erroneous.");
+
+                            yield return new Tuple<string, byte[], int>(activeBlocklistHash, buffer, finalblocklistsize);
                         }
 
-                        var hash = Convert.FromBase64String(rd.GetValue(1).ToString());
-                        Array.Copy(hash, 0, buffer, index, hashsize);
-                        curHash = blockhash;
-                        index += hashsize;
+                        var hash = Convert.FromBase64String(blockhash);
+                        Array.Copy(hash, 0, buffer, indexInBlockList * hashsize, hashsize);
+                        activeBlocklistHash = blocklisthash;
+                        activeBlocklistExpectedSize = blocklistsize;
+                        lastIndex = indexInBlockList;
+                        lastBlockhash = blockhash;
                     }
 
-                if (curHash != null)
-                    yield return new Tuple<string, byte[], int>(curHash, buffer, index);
+                if (activeBlocklistHash != null)
+                {
+                    int finalblocklistsize = ((lastIndex + 1) * hashsize);
+                    if (activeBlocklistExpectedSize != finalblocklistsize)
+                        throw new Exception("Something went wrong during reconstruction of blocklists: Blocklist size does not match expectation. Either the database is corrupt or the internal queries are erroneous.");
 
+                    yield return new Tuple<string, byte[], int>(activeBlocklistHash, buffer, finalblocklistsize);
+                }
 
             }
         }
