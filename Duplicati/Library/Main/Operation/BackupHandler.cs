@@ -732,6 +732,7 @@ namespace Duplicati.Library.Main.Operation
                         using(new Logging.Timer("VerifyConsistency"))
                             m_database.VerifyConsistency(m_transaction, m_options.Blocksize, m_options.BlockhashSize);
     
+                        //! TODO: Add "metadata"-Filesets
                         UploadRealFileList(backend, filesetvolume);
     									
                         m_result.OperationProgressUpdater.UpdatePhase(OperationPhase.Backup_WaitForUpload);
@@ -888,9 +889,12 @@ namespace Duplicati.Library.Main.Operation
     
                         if (!metadata.ContainsKey("CoreSymlinkTarget"))
                             metadata["CoreSymlinkTarget"] = snapshot.GetSymlinkTarget(path);
-    
-                        Stream meta = Utility.WrapMetadata(metadata);
-                        AddSymlinkToOutput(backend, path, DateTime.UtcNow, meta);
+
+                        var smeta = Utility.WrapMetadata(metadata);
+                        string smetaHash = null;
+                        var metaid = AddMetadatasetToOutputAndDB(backend, smeta, out smetaHash);
+
+                        m_database.AddSymlinkEntry(path, metaid, DateTime.UtcNow, m_transaction);
                         
                         m_result.AddVerboseMessage("Stored symlink {0}", path);
                         //Do not recurse symlinks
@@ -900,11 +904,13 @@ namespace Duplicati.Library.Main.Operation
     
                 if ((attributes & FileAttributes.Directory) == FileAttributes.Directory)
                 {
-                    var meta = m_options.StoreMetadata ?
-                         Utility.WrapMetadata(GenerateMetadata(snapshot, path, attributes)) : EMPTY_METADATA;
-    
+                    var smeta = m_options.StoreMetadata ? Utility.WrapMetadata(GenerateMetadata(snapshot, path, attributes)) : EMPTY_METADATA;
+                    string smetaHash = null;
+                    var metaid = AddMetadatasetToOutputAndDB(backend, smeta, out smetaHash);
+
                     m_result.AddVerboseMessage("Adding directory {0}", path);
-                    AddFolderToOutput(backend, path, lastwrite, meta);
+                    m_database.AddDirectoryEntry(path, metaid, lastwrite, m_transaction);
+
                     return true;
                 }
     
@@ -924,16 +930,15 @@ namespace Duplicati.Library.Main.Operation
                 catch { }
 
                 var metaStream = m_options.StoreMetadata ? Utility.WrapMetadata(GenerateMetadata(snapshot, path, attributes)) : EMPTY_METADATA;
-                var metaSize = metaStream.Length;
-                m_filehasher.Initialize();
-                var metaFullHash = Convert.ToBase64String(m_filehasher.ComputeHash(metaStream));
+                string metaFullHash = null;
+                var metadataid = AddMetadatasetToOutputAndDB(backend, metaStream, out metaFullHash);
 
                 var timestampChanged = lastwrite != oldModified || lastwrite.Ticks == 0 || oldModified.Ticks == 0;
                 var filesizeChanged = filestatsize < 0 || lastFileSize < 0 || filestatsize != lastFileSize;
                 var tooLargeFile = m_options.SkipFilesLargerThan != long.MaxValue && m_options.SkipFilesLargerThan != 0 && filestatsize >= 0 && filestatsize > m_options.SkipFilesLargerThan;
-                var metadatachanged = !m_options.SkipMetadata && (metaSize != oldMetasize || metaFullHash != oldMetahash);
+                var metadatachanged = !m_options.SkipMetadata && (metaStream.Length != oldMetasize || metaFullHash != oldMetahash);
 
-                bool hasMissingBlocks = false; //TODO: Query if file has missing blocks in last backup --> if so, examine in any case
+                bool hasMissingBlocks = false; //!TODO: Query if file has missing blocks in last backup --> if so, examine in any case
 
                 if ((oldId < 0 || m_options.DisableFiletimeCheck || timestampChanged || filesizeChanged || metadatachanged || hasMissingBlocks) && !tooLargeFile)
                 {
@@ -949,68 +954,19 @@ namespace Duplicati.Library.Main.Operation
                     using (var blocklisthashes = new Library.Utility.FileBackedStringList())
                     using (var hashcollector = new Library.Utility.FileBackedStringList())
                     {
-                        using (var fs = new Blockprocessor(snapshot.OpenRead(path), m_blockbuffer))
+                        string filekey;
+                        bool updateStats = true;
+                        using (var fs = snapshot.OpenRead(path))
                         {
                             try { m_result.OperationProgressUpdater.StartFile(path, fs.Length); }
-                            catch (Exception ex) { m_result.AddWarning(string.Format("Failed to read file length for file {0}", path), ex); }
-                            
-                            int blocklistoffset = 0;
+                            catch (Exception ex) { m_result.AddWarning(string.Format("Failed to read file length for file {0}", path), ex); updateStats = false; }
 
-                            m_filehasher.Initialize();
-                            
-                            var offset = 0;
-                            var remaining = fs.Readblock();
-                            
-                            do
-                            {
-                                var size = Math.Min(m_blocksize, remaining);
-
-                                m_filehasher.TransformBlock(m_blockbuffer, offset, size, m_blockbuffer, offset);
-                                var blockkey = m_blockhasher.ComputeHash(m_blockbuffer, offset, size);
-                                if (m_blocklistbuffer.Length - blocklistoffset < blockkey.Length)
-                                {
-                                    var blkey = Convert.ToBase64String(m_blockhasher.ComputeHash(m_blocklistbuffer, 0, blocklistoffset));
-                                    blocklisthashes.Add(blkey);
-                                    AddBlockToOutput(backend, blkey, m_blocklistbuffer, 0, blocklistoffset, CompressionHint.Noncompressible, true);
-                                    blocklistoffset = 0;
-                                }
-
-                                Array.Copy(blockkey, 0, m_blocklistbuffer, blocklistoffset, blockkey.Length);
-                                blocklistoffset += blockkey.Length;
-
-                                var key = Convert.ToBase64String(blockkey);
-                                AddBlockToOutput(backend, key, m_blockbuffer, offset, size, hint, false);
-                                hashcollector.Add(key);
-                                filesize += size;
-
-                                m_result.OperationProgressUpdater.UpdateFileProgress(filesize);
-                                if (m_result.TaskControlRendevouz() == TaskControlState.Stop)
-                                    return false;
-                                
-                                remaining -= size;
-                                offset += size;
-                                
-                                if (remaining == 0)
-                                {
-                                    offset = 0;
-                                    remaining = fs.Readblock();
-                                }
-
-                            } while (remaining > 0);
-
-                            //If all fits in a single block, don't bother with blocklists
-                            if (hashcollector.Count > 1)
-                            {
-                                var blkeyfinal = Convert.ToBase64String(m_blockhasher.ComputeHash(m_blocklistbuffer, 0, blocklistoffset));
-                                blocklisthashes.Add(blkeyfinal);
-                                AddBlockToOutput(backend, blkeyfinal, m_blocklistbuffer, 0, blocklistoffset, CompressionHint.Noncompressible, true);
-                            }
+                            if ((filesize = ProcessStream(fs, hint, backend, 2, updateStats, blocklisthashes, hashcollector, out filekey)) < 0)
+                                return false;
                         }
 
                         m_result.SizeOfOpenedFiles += filesize;
-                        m_filehasher.TransformFinalBlock(m_blockbuffer, 0, 0);
 
-                        var filekey = Convert.ToBase64String(m_filehasher.Hash);
                         if (oldHash != filekey)
                         {
                             if (oldHash == null)
@@ -1034,13 +990,18 @@ namespace Duplicati.Library.Main.Operation
 					            	m_result.AddDryrunMessage(string.Format("Would add changed file {0}, size {1}", path, Library.Utility.Utility.FormatSizeString(filesize)));
                             }
 
-                            AddFileToOutput(backend, path, filesize, lastwrite, metaStream, hashcollector, filekey, blocklisthashes);
+                            long fileblocksetid;
+                            m_database.AddBlockset(filekey, filesize, m_blocksize, m_blockhasher.HashSize / 8, hashcollector, blocklisthashes, out fileblocksetid, m_transaction);
+                            m_database.AddFile(path, lastwrite, fileblocksetid, metadataid, m_transaction);
+
                             changed = true;
                         }
                         else if (metadatachanged)
                         {
                             m_result.AddVerboseMessage("File has only metadata changes {0}", path);
-                            AddFileToOutput(backend, path, filesize, lastwrite, metaStream, hashcollector, filekey, blocklisthashes);
+                            long fileblocksetid;
+                            m_database.AddBlockset(filekey, filesize, m_blocksize, m_blockhasher.HashSize / 8, hashcollector, blocklisthashes, out fileblocksetid, m_transaction);
+                            m_database.AddFile(path, lastwrite, fileblocksetid, metadataid, m_transaction);
                             changed = true;
                         }
                         else
@@ -1049,7 +1010,6 @@ namespace Duplicati.Library.Main.Operation
                             oldModified = lastwrite;
                             m_result.AddVerboseMessage("File has not changed {0}", path);
                         }
-
                     }
                 }
                 else
@@ -1075,6 +1035,83 @@ namespace Duplicati.Library.Main.Operation
 
             return true;
         }
+
+
+        /// <summary>
+        /// Processes the stream in blocks: Uploads blocks if not already there, creates and uploads blocklists (if blocklistThreshold is reached),
+        /// calculates and collects hashes all the way that are returned via the List- and out parameters.
+        /// Returns number of processed bytes in stream.
+        /// </summary>
+        private long ProcessStream(System.IO.Stream stream, Library.Interface.CompressionHint hint, BackendManager backend, int blocklistThreshold, bool updateStats,
+                                   Library.Utility.FileBackedStringList blocklisthashes, Library.Utility.FileBackedStringList hashcollector, out string retFileHash)
+        {
+            int blocklistoffset = 0;
+            long filesize = 0;
+            retFileHash = null;
+
+            using (var fs = new Blockprocessor(stream, m_blockbuffer))
+            {
+                m_filehasher.Initialize();
+
+                var offset = 0;
+                var remaining = fs.Readblock();
+
+                do
+                {
+                    var size = Math.Min(m_blocksize, remaining);
+
+                    m_filehasher.TransformBlock(m_blockbuffer, offset, size, m_blockbuffer, offset);
+
+                    var blockkey = m_blockhasher.ComputeHash(m_blockbuffer, offset, size);
+                    if (m_blocklistbuffer.Length - blocklistoffset < blockkey.Length)
+                    {
+                        var blkey = Convert.ToBase64String(m_blockhasher.ComputeHash(m_blocklistbuffer, 0, blocklistoffset));
+                        blocklisthashes.Add(blkey);
+                        AddBlockToOutput(backend, blkey, m_blocklistbuffer, 0, blocklistoffset, CompressionHint.Noncompressible, true);
+                        blocklistoffset = 0;
+                    }
+
+                    Array.Copy(blockkey, 0, m_blocklistbuffer, blocklistoffset, blockkey.Length);
+                    blocklistoffset += blockkey.Length;
+
+                    var key = Convert.ToBase64String(blockkey);
+                    AddBlockToOutput(backend, key, m_blockbuffer, offset, size, hint, false);
+                    hashcollector.Add(key);
+                    filesize += size;
+
+                    if (updateStats)
+                    {
+                        m_result.OperationProgressUpdater.UpdateFileProgress(filesize);
+                        if (m_result.TaskControlRendevouz() == TaskControlState.Stop)
+                            return -1;
+                    }
+
+                    remaining -= size;
+                    offset += size;
+
+                    if (remaining == 0)
+                    {
+                        offset = 0;
+                        remaining = fs.Readblock();
+                    }
+
+                } while (remaining > 0);
+
+                //If all fits in a single block, don't bother with blocklists
+                if (hashcollector.Count > 1)
+                {
+                    var blkeyfinal = Convert.ToBase64String(m_blockhasher.ComputeHash(m_blocklistbuffer, 0, blocklistoffset));
+                    blocklisthashes.Add(blkeyfinal);
+                    AddBlockToOutput(backend, blkeyfinal, m_blocklistbuffer, 0, blocklistoffset, CompressionHint.Noncompressible, true);
+                }
+            }
+
+            m_filehasher.TransformFinalBlock(m_blockbuffer, 0, 0);
+            retFileHash = Convert.ToBase64String(m_filehasher.Hash);
+
+            return filesize;
+        }
+
 
         /// <summary>
         /// Adds the found file data to the output unless the block already exists
@@ -1168,95 +1205,18 @@ namespace Duplicati.Library.Main.Operation
             m_database.AddUnmodifiedFile(oldId, lastModified, m_transaction);
         }
 
-
-        /// <summary>
-        /// Adds a metadata entry to the output. 
-        /// </summary>
-        private bool AddMetadataToOutput(BackendManager backend, Stream meta, out long retMetadataId)
+        private long AddMetadatasetToOutputAndDB(BackendManager backend, Stream meta, out string metadataHash)
         {
-            if (meta == null) { retMetadataId = -1; return false; }
+            long metadataid;
 
-            if (meta.Length > m_blocksize)
-                throw new InvalidDataException(string.Format("Too large metadata, cannot handle more than {0} bytes", m_blocksize));
-
-            // TODO: Process metadata as multiblock with BlockProcessor.
-
-            m_filehasher.Initialize();
-            meta.Position = 0;
-            string fullHash = Convert.ToBase64String(m_filehasher.ComputeHash(meta));
-
-            string blockHash;
-            if (m_options.BlockHashAlgorithm != m_options.FileHashAlgorithm)
+            using(var blocklisthashes = new Library.Utility.FileBackedStringList())
+            using(var hashcollector = new Library.Utility.FileBackedStringList())
             {
                 meta.Position = 0;
-                m_blockhasher.Initialize();
-                blockHash = Convert.ToBase64String(m_blockhasher.ComputeHash(meta));
-            }
-            else
-                blockHash = fullHash;
-
-            meta.Position = 0;
-            byte[] buf = new byte[meta.Length];
-            while (meta.Read(buf, (int)meta.Position, (int)(meta.Length - meta.Position)) != 0) { }
-
-            bool r = false;
-            r |= AddBlockToOutput(backend, fullHash, buf, 0, buf.Length, CompressionHint.Default, false);
-            r |= m_database.AddMetadataset(fullHash, meta.Length, m_blocksize, m_blockhasher.HashSize / 8, new[] { blockHash }, null, out retMetadataId, m_transaction);
-
-            return r;
-        }
-
-        /// <summary>
-        /// Adds a file to the output, 
-        /// </summary>
-        /// <param name="filename">The name of the file to record</param>
-        /// <param name="lastModified">The value of the lastModified timestamp</param>
-        /// <param name="hashlist">The list of hashes that make up the file</param>
-        /// <param name="size">The size of the file</param>
-        /// <param name="fragmentoffset">The offset into a fragment block where the last few bytes are stored</param>
-        /// <param name="metadata">A lookup table with various metadata values describing the file</param>
-        private bool AddFolderToOutput(BackendManager backend, string filename, DateTime lastModified, Stream meta)
-        {
-            long metadataid;
-            bool r = AddMetadataToOutput(backend, meta, out metadataid);
-            m_database.AddDirectoryEntry(filename, metadataid, lastModified, m_transaction);
-            return r;
-        }
-
-        /// <summary>
-        /// Adds a file to the output, 
-        /// </summary>
-        /// <param name="filename">The name of the file to record</param>
-        /// <param name="lastModified">The value of the lastModified timestamp</param>
-        /// <param name="hashlist">The list of hashes that make up the file</param>
-        /// <param name="size">The size of the file</param>
-        /// <param name="fragmentoffset">The offset into a fragment block where the last few bytes are stored</param>
-        /// <param name="metadata">A lookup table with various metadata values describing the file</param>
-        private bool AddSymlinkToOutput(BackendManager backend, string filename, DateTime lastModified, Stream meta)
-        {
-            long metadataid;
-            bool r = AddMetadataToOutput(backend, meta, out metadataid);
-            m_database.AddSymlinkEntry(filename, metadataid, lastModified, m_transaction);
-            return r;
-        }
-
-        /// <summary>
-        /// Adds a file to the output, 
-        /// </summary>
-        /// <param name="filename">The name of the file to record</param>
-        /// <param name="lastModified">The value of the lastModified timestamp</param>
-        /// <param name="hashlist">The list of hashes that make up the file</param>
-        /// <param name="size">The size of the file</param>
-        /// <param name="fragmentoffset">The offset into a fragment block where the last few bytes are stored</param>
-        /// <param name="metadata">A lookup table with various metadata values describing the file</param>
-        private void AddFileToOutput(BackendManager backend, string filename, long size, DateTime lastmodified, Stream meta, IEnumerable<string> hashlist, string filehash, IEnumerable<string> blocklisthashes)
-        {
-            long metadataid;
-            long blocksetid;
-
-            bool r = AddMetadataToOutput(backend, meta, out metadataid);
-            m_database.AddBlockset(filehash, size, m_blocksize, m_blockhasher.HashSize / 8, hashlist, blocklisthashes, out blocksetid, m_transaction);
-            m_database.AddFile(filename, lastmodified, blocksetid, metadataid, m_transaction);
+                ProcessStream(meta, CompressionHint.Compressible, backend, 2, false, blocklisthashes, hashcollector, out metadataHash);
+                bool wasNew = m_database.AddMetadataset(metadataHash, meta.Length, m_blocksize, m_blockhasher.HashSize / 8, hashcollector, blocklisthashes, out metadataid, m_transaction);
+            }  
+            return metadataid;
         }
 
 
