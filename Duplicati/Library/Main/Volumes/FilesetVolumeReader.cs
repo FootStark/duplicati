@@ -98,6 +98,7 @@ namespace Duplicati.Library.Main.Volumes
                     public DateTime Time { get; private set; }
                     public string Metahash { get; private set; }
                     public long Metasize { get; private set; }
+                    public bool IsSimpleBlocklist { get; private set; }
                     public IEnumerable<string> BlocklistHashes { get; private set; }
                     private JsonReader m_reader;
 
@@ -126,9 +127,41 @@ namespace Duplicati.Library.Main.Volumes
                             if (balance != 0)
                                 throw new InvalidDataException(string.Format("Invalid JSON, EOF found while reading entry of type {0}", this.TypeString));
                         }
+                        else if (this.Type == FilelistEntryType.MetadataStream)
+                        {
+                            this.Hash = ReadJsonStringProperty(m_reader, "hash");
+                            this.Size = ReadJsonInt64Property(m_reader, "size");
+
+                            this.Path = ".$METADATA-" + this.Hash + "$"; // we fake a path to not run into null exceptions
+                            this.Metahash = this.Hash;
+                            this.Metasize = this.Size;
+
+                            if (!m_reader.Read())
+                                throw new InvalidDataException(string.Format("Invalid JSON, EOF found while reading entry {0}", this.Path));
+
+                            if (m_reader.TokenType == JsonToken.PropertyName && m_reader.Value != null && m_reader.Value.ToString() == "issimplelist")
+                            {
+                                if (!m_reader.Read())
+                                    throw new InvalidDataException(string.Format("Invalid JSON, EOF found while reading entry {0}", this.Path));
+                                this.IsSimpleBlocklist = Convert.ToBoolean(m_reader.Value);
+                                if (!m_reader.Read())
+                                    throw new InvalidDataException(string.Format("Invalid JSON, EOF found while reading entry {0}", this.Path));
+                            }
+
+                            if (m_reader.TokenType == JsonToken.PropertyName && m_reader.Value != null && m_reader.Value.ToString() == "blocklists")
+                            {
+                                SkipJsonToken(m_reader, JsonToken.StartArray);
+                                BlocklistHashes = new BlocklistHashEnumerable(m_reader);
+                            }
+                            else
+                            {
+                                BlocklistHashes = null;
+                                if (m_reader.TokenType != JsonToken.EndObject)
+                                    throw new InvalidDataException(string.Format("Invalid JSON, expected EndObject, but found {0}, \"{1}\" while reading entry {2}", m_reader.TokenType, m_reader.Value, this.Path));
+                            }
+                        }
                         else
                         {
-
                             this.Path = ReadJsonStringProperty(m_reader, "path");
 
                             if (this.Type == FilelistEntryType.File || this.Type == FilelistEntryType.AlternateStream)
@@ -140,6 +173,7 @@ namespace Duplicati.Library.Main.Volumes
 
                             if (!m_reader.Read())
                                 throw new InvalidDataException(string.Format("Invalid JSON, EOF found while reading entry {0}", this.Path));
+                            
                             if (m_reader.TokenType == JsonToken.PropertyName && m_reader.Value != null && m_reader.Value.ToString() == "metahash")
                             {
                                 if (!m_reader.Read())
@@ -152,7 +186,19 @@ namespace Duplicati.Library.Main.Volumes
                                     throw new InvalidDataException(string.Format("Invalid JSON, EOF found while reading entry {0}", this.Path));
                             }
 
-                            if ((this.Type == FilelistEntryType.File || this.Type == FilelistEntryType.AlternateStream) && m_reader.TokenType == JsonToken.PropertyName && m_reader.Value != null && m_reader.Value.ToString() == "blocklists")
+                            if ((this.Type == FilelistEntryType.File || this.Type == FilelistEntryType.AlternateStream)
+                                && m_reader.TokenType == JsonToken.PropertyName && m_reader.Value != null && m_reader.Value.ToString() == "issimplelists")
+                            {
+                                if (!m_reader.Read())
+                                    throw new InvalidDataException(string.Format("Invalid JSON, EOF found while reading entry {0}", this.Path));
+                                this.IsSimpleBlocklist = Convert.ToBoolean(m_reader.Value);
+                                if (!m_reader.Read())
+                                    throw new InvalidDataException(string.Format("Invalid JSON, EOF found while reading entry {0}", this.Path));
+                            }
+
+
+                            if ((this.Type == FilelistEntryType.File || this.Type == FilelistEntryType.AlternateStream)
+                                && m_reader.TokenType == JsonToken.PropertyName && m_reader.Value != null && m_reader.Value.ToString() == "blocklists")
                             {
                                 SkipJsonToken(m_reader, JsonToken.StartArray);
                                 BlocklistHashes = new BlocklistHashEnumerable(m_reader);

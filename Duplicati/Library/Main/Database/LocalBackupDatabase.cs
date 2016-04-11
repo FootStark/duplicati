@@ -124,7 +124,7 @@ namespace Duplicati.Library.Main.Database
             m_findblocksetCommand.CommandText = @"SELECT ""ID"" FROM ""Blockset"" WHERE ""Fullhash"" = ? AND ""Length"" = ?";
             m_findblocksetCommand.AddParameters(2);
 
-            m_findmetadatasetCommand.CommandText = @"SELECT ""A"".""BlocksetID"" FROM ""MetadataBlockset"" A, ""BlocksetEntry"" B WHERE ""A"".""BlocksetID"" = ""B"".""BlocksetID"" AND ""B"".""FullHash"" = ? AND ""B"".""Length"" = ?";
+            m_findmetadatasetCommand.CommandText = @"SELECT ""A"".""BlocksetID"" FROM ""MetadataBlockset"" A, ""Blockset"" B WHERE ""A"".""BlocksetID"" = ""B"".""ID"" AND ""B"".""FullHash"" = ? AND ""B"".""Length"" = ?";
             m_findmetadatasetCommand.AddParameters(2);
 
             m_findfilesetCommand.CommandText = @"SELECT ""ID"" FROM ""File"" WHERE ""BlocksetID"" = ? AND ""MetadataID"" = ? AND ""Path"" = ?";
@@ -640,9 +640,9 @@ namespace Duplicati.Library.Main.Database
             return r.ToString();
         }
         
-        public void WriteFileset(Volumes.FilesetVolumeWriter filesetvolume, System.Data.IDbTransaction transaction)
+        public void WriteFileset(Volumes.FilesetVolumeWriter filesetvolume, int blocksize, System.Data.IDbTransaction transaction)
 		{
-			WriteFileset(filesetvolume, transaction, m_filesetId);
+            WriteFileset(filesetvolume, m_filesetId, blocksize, transaction);
 		}        
 
         public override void Dispose ()

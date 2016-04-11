@@ -123,6 +123,10 @@ namespace Duplicati.Library.Main
         /// <summary>
         /// The entry is a symbolic link
         /// </summary>
-        Symlink
+        Symlink,
+        /// <summary>
+        /// The entry is a metadata blockset
+        /// </summary>
+        MetadataStream
     }   
 }

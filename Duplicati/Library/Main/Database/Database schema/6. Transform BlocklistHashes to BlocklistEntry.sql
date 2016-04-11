@@ -13,7 +13,7 @@ CREATE TABLE "BlocklistEntry" (
 	"BlocksetID" INTEGER NOT NULL,
 	"Index" INTEGER NOT NULL,
 	"BlockID" INTEGER NOT NULL,
-	CONSTRAINT "BlocksetEntry_PK_IdIndex" PRIMARY KEY ("BlocksetID", "Index")
+	CONSTRAINT "BlocklistEntry_PK_IdIndex" PRIMARY KEY ("BlocksetID", "Index")
 ) {#if sqlite_version >= 3.8.2} WITHOUT ROWID {#endif};
 /* As this table is a cross table we need fast lookup */
 
@@ -50,7 +50,7 @@ CREATE INDEX "BlocklistEntry_IndexIdsBackwards" ON "BlocklistEntry" ("BlockID");
 /**** Process second upgrade: Directly use BlocksetId as MetadatasetId *****/
 
 CREATE TABLE "MetadataBlockset" (
-	"BlocksetID" INTEGER PRIMARY KEY,
+	"BlocksetID" INTEGER PRIMARY KEY
 );
 
 INSERT INTO "MetadataBlockset" ("BlocksetID")

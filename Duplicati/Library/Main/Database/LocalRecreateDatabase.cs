@@ -344,7 +344,7 @@ namespace Duplicati.Library.Main.Database
             m_insertFilesetEntryCommand.ExecuteNonQuery();
         }
         
-        private long AddMetadataset(string metahash, long metahashsize, System.Data.IDbTransaction transaction)
+        public long AddMetadataset(string metahash, long metahashsize, System.Data.IDbTransaction transaction)
         {
             var metadataid = -1L;
             if (metahash == null)

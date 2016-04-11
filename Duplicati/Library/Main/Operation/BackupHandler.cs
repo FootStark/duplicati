@@ -24,7 +24,8 @@ namespace Duplicati.Library.Main.Operation
         private BlockVolumeWriter m_blockvolume;
         private IndexVolumeWriter m_indexvolume;
 
-        private readonly Stream EMPTY_METADATA;
+        private readonly byte[] EMPTY_METADATA_BYTES;
+        private Stream EMPTY_METADATA { get { return new MemoryStream(EMPTY_METADATA_BYTES); } }
         
         private Library.Utility.IFilter m_filter;
         private Library.Utility.IFilter m_sourceFilter;
@@ -44,7 +45,12 @@ namespace Duplicati.Library.Main.Operation
 
         public BackupHandler(string backendurl, Options options, BackupResults results)
         {
-        	EMPTY_METADATA = Utility.WrapMetadata(new Dictionary<string, string>());
+            using (var s = Utility.WrapMetadata(new Dictionary<string, string>()))
+            {
+                EMPTY_METADATA_BYTES = new byte[s.Length];
+                int c = 0;
+                while ((c = c + s.Read(EMPTY_METADATA_BYTES, c, (int)s.Length - c)) < s.Length) { }
+            }  
         	
             m_options = options;
             m_result = results;
@@ -344,7 +350,7 @@ namespace Duplicati.Library.Main.Operation
                         m_database.LinkFilesetToVolume(newFilesetID, fsw.VolumeID, trn);
                         m_database.AppendFilesFromPreviousSet(trn, null, newFilesetID, prevId, fileTime);
 
-                        m_database.WriteFileset(fsw, trn, newFilesetID);
+                        m_database.WriteFileset(fsw, newFilesetID, m_blocksize, trn);
 
                         if (m_options.Dryrun)
                         {
@@ -565,7 +571,7 @@ namespace Duplicati.Library.Main.Operation
                         foreach(var p in m_options.ControlFiles.Split(new char[] { System.IO.Path.PathSeparator }, StringSplitOptions.RemoveEmptyEntries))
                             filesetvolume.AddControlFile(p, m_options.GetCompressionHintFromFilename(p));
 
-                    m_database.WriteFileset(filesetvolume, m_transaction);
+                    m_database.WriteFileset(filesetvolume, m_blocksize, m_transaction);
                     filesetvolume.Close();
 
                     if (m_options.Dryrun)
@@ -732,7 +738,6 @@ namespace Duplicati.Library.Main.Operation
                         using(new Logging.Timer("VerifyConsistency"))
                             m_database.VerifyConsistency(m_transaction, m_options.Blocksize, m_options.BlockhashSize);
     
-                        //! TODO: Add "metadata"-Filesets
                         UploadRealFileList(backend, filesetvolume);
     									
                         m_result.OperationProgressUpdater.UpdatePhase(OperationPhase.Backup_WaitForUpload);
@@ -930,13 +935,14 @@ namespace Duplicati.Library.Main.Operation
                 catch { }
 
                 var metaStream = m_options.StoreMetadata ? Utility.WrapMetadata(GenerateMetadata(snapshot, path, attributes)) : EMPTY_METADATA;
+                long metasize = metaStream.Length;
                 string metaFullHash = null;
                 var metadataid = AddMetadatasetToOutputAndDB(backend, metaStream, out metaFullHash);
 
                 var timestampChanged = lastwrite != oldModified || lastwrite.Ticks == 0 || oldModified.Ticks == 0;
                 var filesizeChanged = filestatsize < 0 || lastFileSize < 0 || filestatsize != lastFileSize;
                 var tooLargeFile = m_options.SkipFilesLargerThan != long.MaxValue && m_options.SkipFilesLargerThan != 0 && filestatsize >= 0 && filestatsize > m_options.SkipFilesLargerThan;
-                var metadatachanged = !m_options.SkipMetadata && (metaStream.Length != oldMetasize || metaFullHash != oldMetahash);
+                var metadatachanged = !m_options.SkipMetadata && (metasize != oldMetasize || metaFullHash != oldMetahash);
 
                 bool hasMissingBlocks = false; //!TODO: Query if file has missing blocks in last backup --> if so, examine in any case
 
@@ -1213,8 +1219,9 @@ namespace Duplicati.Library.Main.Operation
             using(var hashcollector = new Library.Utility.FileBackedStringList())
             {
                 meta.Position = 0;
+                long metasize = meta.Length;
                 ProcessStream(meta, CompressionHint.Compressible, backend, 2, false, blocklisthashes, hashcollector, out metadataHash);
-                bool wasNew = m_database.AddMetadataset(metadataHash, meta.Length, m_blocksize, m_blockhasher.HashSize / 8, hashcollector, blocklisthashes, out metadataid, m_transaction);
+                bool wasNew = m_database.AddMetadataset(metadataHash, metasize, m_blocksize, m_blockhasher.HashSize / 8, hashcollector, blocklisthashes, out metadataid, m_transaction);
             }  
             return metadataid;
         }

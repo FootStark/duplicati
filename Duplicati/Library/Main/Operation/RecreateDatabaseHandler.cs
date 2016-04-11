@@ -247,6 +247,36 @@ namespace Duplicati.Library.Main.Operation
                                                 var blocksetid = restoredb.AddBlockset(fe.Hash, fe.Size, fe.BlocklistHashes, expectedblocklisthashes,expectedBlocklistBlockSizes, isSingleBlockHash, tr);
                                                 restoredb.AddFileEntry(filesetid, fe.Path, fe.Time, blocksetid, fe.Metahash, fe.Metahash == null ? -1 : fe.Metasize, tr);
                                             }
+                                            else if (fe.Type == FilelistEntryType.MetadataStream)
+                                            {
+                                                var expectedblocks = (fe.Size + blocksize - 1) / blocksize;
+                                                var expectedblocklisthashes = (expectedblocks + hashes_pr_block - 1) / hashes_pr_block;
+                                                IEnumerable<long> expectedBlocklistBlockSizes; // will be list with precalculated sizes expected
+
+                                                bool isSingleBlockHash = false;
+                                                if (expectedblocks <= 1) // empty or single block files
+                                                {
+                                                    if (filelistreader.ShouldHaveSingleBlockFileHashes)
+                                                    {
+                                                        isSingleBlockHash = true;
+                                                        expectedblocklisthashes = 1;
+                                                        expectedBlocklistBlockSizes = Enumerable.Repeat(fe.Size, 1);
+                                                    }
+                                                    else
+                                                    {
+                                                        expectedblocklisthashes = 0;
+                                                        expectedBlocklistBlockSizes = null;
+                                                    }
+                                                }
+                                                else
+                                                {
+                                                    expectedBlocklistBlockSizes = Enumerable.Range(0, (int)expectedblocklisthashes)
+                                                        .Select(i => Math.Min(expectedblocklisthashes - (i * hashes_pr_block), hashes_pr_block) * m_options.BlockhashSize);
+                                                }
+
+                                                var blocksetid = restoredb.AddBlockset(fe.Hash, fe.Size, fe.BlocklistHashes, expectedblocklisthashes, expectedBlocklistBlockSizes, isSingleBlockHash, tr);
+                                                var metadataid = restoredb.AddMetadataset(fe.Hash, fe.Size, tr);
+                                            }
                                             else if (fe.Type == FilelistEntryType.Symlink)
                                             {
                                                 restoredb.AddSymlinkEntry(filesetid, fe.Path, fe.Time, fe.Metahash, fe.Metahash == null ? -1 : fe.Metasize, tr);
