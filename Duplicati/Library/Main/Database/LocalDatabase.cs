@@ -904,7 +904,7 @@ namespace Duplicati.Library.Main.Database
                         }
                     }
                     else
-                        filesetvolume.AddMetadataStream(metahash, metasize, metablrd.ForwardReaderEnumerable(r => r.GetString(0)), true);
+                        filesetvolume.AddMetadataStream(metahash, metasize, metablrd.ForwardReaderEnumerable(r => r.GetString(0)), null);
                 }
                 return true;
             }
@@ -1039,7 +1039,7 @@ namespace Duplicati.Library.Main.Database
                                     }
                                 }
                                 else if (!isSingleBlockFile)
-                                    filesetvolume.AddFile(path, filehash, size, lastmodified, metahash, metalength, blrd.ForwardReaderEnumerable(r => r.GetString(0)), false);
+                                    filesetvolume.AddFile(path, filehash, size, lastmodified, metahash, metalength, blrd.ForwardReaderEnumerable(r => r.GetString(0)), null); // blocklist-list is default
                                 else
                                     filesetvolume.AddFile(path, filehash, size, lastmodified, metahash, metalength, null, null);
                             }

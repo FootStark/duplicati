@@ -98,7 +98,7 @@ namespace Duplicati.Library.Main.Volumes
                     public DateTime Time { get; private set; }
                     public string Metahash { get; private set; }
                     public long Metasize { get; private set; }
-                    public bool IsSimpleBlocklist { get; private set; }
+                    public bool? IsSimpleBlocklist { get; private set; }
                     public IEnumerable<string> BlocklistHashes { get; private set; }
                     private JsonReader m_reader;
 
@@ -187,7 +187,7 @@ namespace Duplicati.Library.Main.Volumes
                             }
 
                             if ((this.Type == FilelistEntryType.File || this.Type == FilelistEntryType.AlternateStream)
-                                && m_reader.TokenType == JsonToken.PropertyName && m_reader.Value != null && m_reader.Value.ToString() == "issimplelists")
+                                && m_reader.TokenType == JsonToken.PropertyName && m_reader.Value != null && m_reader.Value.ToString() == "issimplelist")
                             {
                                 if (!m_reader.Read())
                                     throw new InvalidDataException(string.Format("Invalid JSON, EOF found while reading entry {0}", this.Path));

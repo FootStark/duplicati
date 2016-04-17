@@ -78,12 +78,13 @@ namespace Duplicati.Library.Main.Operation
         internal void DoRun(LocalDatabase dbparent, bool updating, Library.Utility.IFilter filter = null, NumberedFilterFilelistDelegate filelistfilter = null, BlockVolumePostProcessor blockprocessor = null)
         {
             m_result.OperationProgressUpdater.UpdatePhase(OperationPhase.Recreate_Running);
-
+             
             //We build a local database in steps.
             using(var restoredb = new LocalRecreateDatabase(dbparent, m_options))
             using(var backend = new BackendManager(m_backendurl, m_options, m_result.BackendWriter, restoredb))
             {
 				restoredb.RepairInProgress = true;
+                restoredb.SetResult(m_result); //?
 
                 var volumeIds = new Dictionary<string, long>();
 
@@ -141,8 +142,13 @@ namespace Duplicati.Library.Main.Operation
                     throw new Exception(string.Format("No filelists"));
 
                 // If we are updating, all files should be accounted for
-                foreach(var fl in remotefiles)
-                    volumeIds[fl.File.Name] = updating ? restoredb.GetRemoteVolumeID(fl.File.Name) : restoredb.RegisterRemoteVolume(fl.File.Name, fl.FileType, fl.File.Size, RemoteVolumeState.Uploaded);
+                using (var tr = restoredb.BeginTransaction())
+                {
+                    foreach (var fl in remotefiles)
+                        volumeIds[fl.File.Name] = updating ? restoredb.GetRemoteVolumeID(fl.File.Name,tr)
+                            : restoredb.RegisterRemoteVolume(fl.File.Name, fl.FileType, RemoteVolumeState.Uploaded, fl.File.Size, new TimeSpan(0), tr);
+                    tr.Commit();
+                }
 
                 var hasUpdatedOptions = false;
 
@@ -217,19 +223,19 @@ namespace Duplicati.Library.Main.Operation
                                             {
                                                 restoredb.AddDirectoryEntry(filesetid, fe.Path, fe.Time, fe.Metahash, fe.Metahash == null ? -1 : fe.Metasize, tr);
                                             }
-                                            else if (fe.Type == FilelistEntryType.File)
+                                            else if (fe.Type == FilelistEntryType.File || (fe.Type == FilelistEntryType.MetadataStream))
                                             {
                                                 var expectedblocks = (fe.Size + blocksize - 1) / blocksize;
                                                 var expectedblocklisthashes = (expectedblocks + hashes_pr_block - 1) / hashes_pr_block;
                                                 IEnumerable<long> expectedBlocklistBlockSizes; // will be list with precalculated sizes expected
 
-                                                bool isSingleBlockHash = false;
+                                                bool isSimpleBlocks = fe.IsSimpleBlocklist ?? false;
                                                 if (expectedblocks <= 1) // empty or single block files
                                                 {
                                                     if (filelistreader.ShouldHaveSingleBlockFileHashes)
                                                     {
-                                                        isSingleBlockHash = true;
                                                         expectedblocklisthashes = 1;
+                                                        isSimpleBlocks = true;
                                                         expectedBlocklistBlockSizes = Enumerable.Repeat(fe.Size, 1);
                                                     }
                                                     else
@@ -238,44 +244,29 @@ namespace Duplicati.Library.Main.Operation
                                                         expectedBlocklistBlockSizes = null;
                                                     }
                                                 }
-                                                else
+                                                else if (isSimpleBlocks)
+                                                {
+                                                    expectedblocklisthashes = expectedblocks;
+                                                    expectedBlocklistBlockSizes = Enumerable.Range(0, (int)expectedblocks)
+                                                        .Select(i => Math.Min(blocksize, fe.Size - (blocksize * i)));
+                                                }
+                                                else 
                                                 {
                                                     expectedBlocklistBlockSizes = Enumerable.Range(0, (int)expectedblocklisthashes)
-                                                        .Select(i => Math.Min(expectedblocklisthashes - (i * hashes_pr_block), hashes_pr_block) * m_options.BlockhashSize);
+                                                        .Select(i => Math.Min(expectedblocks - (i * hashes_pr_block), hashes_pr_block) * m_options.BlockhashSize);
                                                 }
 
-                                                var blocksetid = restoredb.AddBlockset(fe.Hash, fe.Size, fe.BlocklistHashes, expectedblocklisthashes,expectedBlocklistBlockSizes, isSingleBlockHash, tr);
-                                                restoredb.AddFileEntry(filesetid, fe.Path, fe.Time, blocksetid, fe.Metahash, fe.Metahash == null ? -1 : fe.Metasize, tr);
-                                            }
-                                            else if (fe.Type == FilelistEntryType.MetadataStream)
-                                            {
-                                                var expectedblocks = (fe.Size + blocksize - 1) / blocksize;
-                                                var expectedblocklisthashes = (expectedblocks + hashes_pr_block - 1) / hashes_pr_block;
-                                                IEnumerable<long> expectedBlocklistBlockSizes; // will be list with precalculated sizes expected
-
-                                                bool isSingleBlockHash = false;
-                                                if (expectedblocks <= 1) // empty or single block files
+                                                var blocksetid = restoredb.AddEmptyBlockset(fe.Hash, fe.Size, tr);
+                                                if (fe.BlocklistHashes != null)
                                                 {
-                                                    if (filelistreader.ShouldHaveSingleBlockFileHashes)
-                                                    {
-                                                        isSingleBlockHash = true;
-                                                        expectedblocklisthashes = 1;
-                                                        expectedBlocklistBlockSizes = Enumerable.Repeat(fe.Size, 1);
-                                                    }
-                                                    else
-                                                    {
-                                                        expectedblocklisthashes = 0;
-                                                        expectedBlocklistBlockSizes = null;
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    expectedBlocklistBlockSizes = Enumerable.Range(0, (int)expectedblocklisthashes)
-                                                        .Select(i => Math.Min(expectedblocklisthashes - (i * hashes_pr_block), hashes_pr_block) * m_options.BlockhashSize);
+                                                    restoredb.AddBlocksetEntryDefs(blocksetid, fe.BlocklistHashes, expectedblocklisthashes, expectedBlocklistBlockSizes, isSimpleBlocks,
+                                                    hashes_pr_block, tr);
                                                 }
 
-                                                var blocksetid = restoredb.AddBlockset(fe.Hash, fe.Size, fe.BlocklistHashes, expectedblocklisthashes, expectedBlocklistBlockSizes, isSingleBlockHash, tr);
-                                                var metadataid = restoredb.AddMetadataset(fe.Hash, fe.Size, tr);
+                                                if (fe.Type == FilelistEntryType.File)
+                                                    restoredb.AddFileEntry(filesetid, fe.Path, fe.Time, blocksetid, fe.Metahash, fe.Metahash == null ? -1 : fe.Metasize, tr);
+                                                else if (fe.Type == FilelistEntryType.MetadataStream)
+                                                    restoredb.AddMetadataset(fe.Hash, fe.Size, tr); 
                                             }
                                             else if (fe.Type == FilelistEntryType.Symlink)
                                             {
@@ -369,16 +360,20 @@ namespace Duplicati.Library.Main.Operation
                                             }
                                             
                                             //Add all block/volume mappings
-                                            foreach(var b in a.Blocks)
-                                                restoredb.UpdateOrRegisterBlock(b.Key, b.Value, volumeID, tr);
+                                            restoredb.UpdateOrRegisterBlocksInVolume(a.Blocks, volumeID, null, tr);
 
                                             restoredb.UpdateRemoteVolume(filename, RemoteVolumeState.Verified, a.Length, a.Hash, tr);
                                             restoredb.AddIndexBlockLink(restoredb.GetRemoteVolumeID(sf.Name), volumeID, tr);
                                         }
                                 
                                         //If there are blocklists in the index file, update the blocklists
-                                        foreach(var b in svr.BlockLists)
-                                            restoredb.UpdateBlockset(b.Hash, b.Blocklist, tr);
+                                        // List<long> newBlocklistDefs = new List<long>();
+                                        foreach (var b in svr.BlockLists)
+                                        {
+                                            long blocklistId = restoredb.UpdateOrRegisterBlock(b.Hash, b.Length, -1, tr);
+                                            if (restoredb.UpdateBlocklist(blocklistId, b.Blocklist, tr))
+                                            { } // restoredb.UpdateBlocksetsWithBlocklistDef(blocklistId, m_options.Blocksize / m_options.BlockhashSize, tr);
+                                        }
                                     }
                                 }
                             }
@@ -390,8 +385,11 @@ namespace Duplicati.Library.Main.Operation
                                     throw;
                             }
 
+                        restoredb.UpdateBlocksetsWithBlocklistDef(-1, m_options.Blocksize / m_options.BlockhashSize, tr);
+                        restoredb.InsertMissingSingleBlockEntries(m_options.Blocksize, tr);
+
                         using(new Logging.Timer("CommitRecreatedDb"))
-                            tr.Commit();
+                            tr.Commit(); 
                     
                         // TODO: In some cases, we can avoid downloading all index files, 
                         // if we are lucky and pick the right ones
@@ -399,7 +397,10 @@ namespace Duplicati.Library.Main.Operation
 
                     // We have now grabbed as much information as possible,
                     // if we are still missing data, we must now fetch block files
-                    restoredb.FindMissingBlocklistHashes(hashsize, m_options.Blocksize, null);
+                    //! restoredb.FindMissingBlocklistHashes(hashsize, m_options.Blocksize, null);
+
+                    restoredb.InsertMissingSingleBlockEntries(m_options.Blocksize, null);
+
                 
                     //We do this in three passes
                     for(var i = 0; i < 3; i++)
@@ -449,20 +450,20 @@ namespace Duplicati.Library.Main.Operation
                                 var volumeid = restoredb.GetRemoteVolumeID(sf.Name);
 
                                 restoredb.UpdateRemoteVolume(sf.Name, RemoteVolumeState.Uploaded, sf.Size, sf.Hash, tr);
-                            
+
                                 // Update the block table so we know about the block/volume map
-                                foreach(var h in rd.Blocks)
-                                    restoredb.UpdateOrRegisterBlock(h.Key, h.Value, volumeid, tr);
+                                restoredb.UpdateOrRegisterBlocksInVolume(rd.Blocks, volumeid, null, tr);
                             
                                 // Grab all known blocklists from the volume
-                                foreach (var blocklisthash in restoredb.GetBlockLists(volumeid))
+                                foreach (var blocklistBlock in restoredb.GetBlockListBlocks(volumeid))
                                 {
-                                    //! Check where BlockSet is recorded in DB: var blid = restoredb.UpdateOrRegisterBlock(blocklisthash, h.Value, volumeid, tr);
-                                    restoredb.UpdateBlockset(blocklisthash, rd.ReadBlocklist(blocklisthash, hashsize), tr);
+                                    if (restoredb.UpdateBlocklist(blocklistBlock.Item1, rd.ReadBlocklist(blocklistBlock.Item2, hashsize), tr))
+                                        restoredb.UpdateBlocksetsWithBlocklistDef(blocklistBlock.Item1, m_options.Blocksize / m_options.BlockhashSize, tr);
                                 }
     
                                 // Update tables so we know if we are done
-                                restoredb.FindMissingBlocklistHashes(hashsize, m_options.Blocksize, tr);
+                                //! restoredb.FindMissingBlocklistHashes(hashsize, m_options.Blocksize, tr);
+                                restoredb.InsertMissingSingleBlockEntries(m_options.Blocksize, null);
                         
                                 using(new Logging.Timer("CommitRestoredBlocklist"))
                                     tr.Commit();

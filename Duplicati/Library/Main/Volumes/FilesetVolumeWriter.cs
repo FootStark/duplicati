@@ -105,7 +105,6 @@ namespace Duplicati.Library.Main.Volumes
                     }
                     m_writer.WritePropertyName("blocklists");
                     m_writer.WriteStartArray();
-                    m_writer.WriteValue(en.Current);
                     do m_writer.WriteValue(en.Current);
                     while (en.MoveNext());
                     m_writer.WriteEndArray();

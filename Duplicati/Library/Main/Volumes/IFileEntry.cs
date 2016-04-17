@@ -15,6 +15,7 @@ namespace Duplicati.Library.Main.Volumes
         DateTime Time { get; }
         string Metahash { get; }
         long Metasize { get; }
+        bool? IsSimpleBlocklist { get; }
         IEnumerable<string> BlocklistHashes { get; }
     }
 }
